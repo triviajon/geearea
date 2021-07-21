@@ -7,15 +7,17 @@ Created on Tue Jul 20 12:27:43 2021
 
 from setuptools import setup, find_packages
 
-VERSION = '0.0.1' 
+VERSION = '0.0.5' 
 DESCRIPTION = 'Managing GEE data easily'
-LONG_DESCRIPTION = 'A Python package for easily managing and downloading Google Earth Engine data defined over geographical area.'
+LONG_DESCRIPTION = 'A Python package for easily managing and downloading \
+    Google Earth Engine data defined over geographical area. See https://github.com/triviajon/geearea \
+        for detailed source code.'
 
 setup(
         name="geearea", 
         version=VERSION,
         author="Jon Rosario",
-        author_email="<youremail@email.com>",
+        author_email="<jonf.rosario@gmail.com>",
         description=DESCRIPTION,
         long_description=LONG_DESCRIPTION,
         packages=find_packages(),
@@ -24,7 +26,7 @@ setup(
         
         keywords=['python', 'google earth engine', 'gee', 'area'],
         classifiers= [
-            "Development Status :: 3 - Alpha",
+            "Development Status :: 4 - Beta",
             "Topic :: Utilities",
             "License :: OSI Approved :: MIT License",
 
