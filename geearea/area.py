@@ -7,8 +7,18 @@ Created on Tue Jul 20 10:48:31 2021
 
 import os
 from datetime import date
+import glob
+import time
+import math
+from IPython.display import display
+import datetime as dt
+import pytz
+import matplotlib.pyplot as plt
+import urllib
+import numpy as np
 import folium
 import ee
+from google.cloud import storage
 
 def auth():
     """
@@ -18,16 +28,18 @@ def auth():
         None.
 
     Returns:
-        None.
+        client (storage.Client): A Client object that can be used to access \
+            Google Cloud Storage data.
 
     """
     while True:
         try:
             response = int(input('Would you like to authenticate through browser (input "1") \
-                                 or service account and private key (input "2")? '))
+or service account and private key (input "2")? '))
             if response == 1:
                 ee.Authenticate()
                 ee.Initialize()
+                client_obj = storage.Client()
             elif response == 2:
                 try:
                     service_account = input("Enter your service account email: ")
@@ -38,98 +50,102 @@ def auth():
                             break
                     credentials = ee.ServiceAccountCredentials(service_account, json_file)
                     ee.Initialize(credentials=credentials)
+                    client_obj = storage.Client(credentials=credentials)
                 except:
                     print("The JSON private key file could not be found or was inconsistent \
-                          with the service account. Please only one key in the current \
-                              file directory.")
+with the service account. Please only one key in the current file directory.")
             break
         except:
             print("I didn't understand your response. Please input either 1 or 2.")
+    return client_obj
 
-auth()
-
+client = auth()
 
 # reducer
-import numpy as np
-
 def divider(coordinates):
 
     assert np.array(coordinates).shape[1] == 2, "Coordinates of wrong size [error]"
     def checkifrect(nparray):
-        p1, p2, p3, p4, p5 = nparray
-        v1_mag = np.linalg.norm(np.subtract(p3, p1))
-        v2_mag = np.linalg.norm(np.subtract(p4, p2))
-        if np.abs(v1_mag-v2_mag) < 0.001:
-            return True
-        else:
-            return False
+        pone, ptwo, pthree, pfour, pfive = nparray
+        v1_mag = np.linalg.norm(np.subtract(pthree, pone))
+        v2_mag = np.linalg.norm(np.subtract(pfour, ptwo))
+        return bool(np.abs(v1_mag-v2_mag) < 0.001)
 
     assert checkifrect(coordinates), "The input geometry must be rectangular"
-    
-    x = coordinates[:, 0]
-    y = coordinates[:, 1]
-    # plt.plot(x, y, 'bo')
-    (c_x, c_y) = (np.sum(x[:-1])/np.size(x[:-1]), np.sum(y[:-1])/np.size(y[:-1]))
+
+    x_data = coordinates[:, 0]
+    y_data = coordinates[:, 1]
+
+    (c_x, c_y) = (np.sum(x_data[:-1])/np.size(x_data[:-1]),
+                  np.sum(y_data[:-1])/np.size(y_data[:-1]))
     new_polygons = []
     corners = len(coordinates)-1
-    
+
     for i in range(corners):
-        polygon = [[x[i], y[i]],
-                   [(x[i%corners]+x[(i+1)%corners])/2, (y[i%corners]+y[(i+1)%corners])/2],
+        polygon = [[x_data[i], y_data[i]],
+                   [(x_data[i%corners]+x_data[(i+1)%corners])/2,
+                    (y_data[i%corners]+y_data[(i+1)%corners])/2],
                    [c_x, c_y],
-                   [(x[i]+x[(i-1)%corners])/2, (y[i]+y[(i-1)%corners])/2],
-                   [x[i], y[i]]]
+                   [(x_data[i]+x_data[(i-1)%corners])/2,
+                    (y_data[i]+y_data[(i-1)%corners])/2],
+                   [x_data[i], y_data[i]]]
         new_polygons.append(polygon)
-    
-    # new_polygons = np.array(new_polygons)
-    
     return new_polygons
 
-def LLarea(coordinates):
-    assert np.array(coordinates).shape[1] == 2, "Coordinates of wrong size [error]"
-    p1, p2, p3, p4, p5 = coordinates
+def rect_area(coordinates):
+    try:
+        np.array(coordinates).shape[1] == 2
+        p1, p2, p3, p4, p5 = coordinates
+    except:
+        coordinates = primer(coordinates)[0]
+        p1, p2, p3, p4, p5 = coordinates
+
     area = np.abs(np.linalg.norm(p2-p1)*np.linalg.norm(p4-p1))
     return area
 
-def allGood(listOfCoords):
+def all_good(listOfCoords):
     flag = True
     for coords in listOfCoords:
-        if LLarea(coords) > 0.1: # arbitary value
+        if rect_area(coords) > 0.1: # arbitary value
             flag = False
             break
     return flag
 
+def primer(area):
+        l1 = [area,]
+        l2 = np.array(l1)
+        l3 = np.reshape(l2,(l2.shape[0], l2.shape[2], 2))
+        return l3
+
 def reduce(listOfCoords):
     """
     Divides a rectangles defined by closed coordinates into smaller, rectangles.
+
     Args:
-        listOfCoords (list): A list of coordinates in the form [[[x1, y1], [x2, y2], ...., [x1, y1]], ...]. The 
-        coordinates must define a rectangular shape.
+        listOfCoords (list): A list of coordinates in the form \
+            [[[x1, y1], [x2, y2], ...., [x1, y1]], ...]. The \
+            coordinates must define a rectangular shape.
     Returns:
-        new_polygons (list): A set of new rectangular in the form [coordinates1, coordinates2, ..., coordinatesn]
-        where n is the number number of length of coordinates-1 (the number of corners)
-    
+        new_polygons (list): A set of new rectangular in the form \
+            [coordinates1, coordinates2, ..., coordinatesn] where n is \
+            the number number of length of coordinates-1 (the number of corners)
+
     """
     try:
         listOfCoords[1]
     except:
-        def primer(area):
-            l1 = [area,]
-            l2 = np.array(l1)
-            l3 = np.reshape(l2,(l2.shape[0], l2.shape[2], 2))
-            return l3
         listOfCoords = primer(listOfCoords)
     assert listOfCoords.shape[2] == 2, "wrong size error"
 
-    if allGood(listOfCoords):
+    if all_good(listOfCoords):
         return listOfCoords
-    else:
-        newlistOfCoords = []
-        for coords in listOfCoords:
-            newlistOfCoords = newlistOfCoords + divider(coords)
-        
-        newlistOfCoords = np.squeeze(np.array(newlistOfCoords))
-        return reduce(listOfCoords=newlistOfCoords)
+
+    newlistOfCoords = []
+    for coords in listOfCoords:
+        newlistOfCoords = newlistOfCoords + divider(coords)
+
+    newlistOfCoords = np.squeeze(np.array(newlistOfCoords))
+    return reduce(listOfCoords=newlistOfCoords)
 
 
 def geoJSONer(coords):
@@ -153,17 +169,15 @@ def degeoJSONer(geoJSON):
     coords = geoJSON['features'][0]['geometry']['coordinates']
     return coords
 
-
 # gammamap
-import math
+def gammamap(image):
 
-def gammamap(image): 
-    
     """
-    Gamma Maximum a-posterior Filter applied to one image. It is implemented as described in 
-    Lopes A., Nezry, E., Touzi, R., and Laur, H., 1990.  
-    Maximum A Posteriori Speckle Filtering and First Order texture Models in SAR Images.  
-    International  Geoscience  and  Remote  Sensing  Symposium (IGARSS).
+    Gamma Maximum a-posterior Filter applied to one image. It is implemented as \
+        described in Lopes A., Nezry, E., Touzi, R., and Laur, H., 1990. \
+        Maximum A Posteriori Speckle Filtering and First Order texture Models \
+        in SAR Images. International  Geoscience  and  Remote  Sensing  Symposium.
+
     Parameters
     ----------
     image : ee.Image
@@ -175,7 +189,7 @@ def gammamap(image):
     """
     enl = 5
     KERNEL_SIZE=3
-    try: 
+    try:
         bandNames = image.bandNames().remove('angle')
     except:
         bandNames= image.bandNames()
@@ -190,10 +204,10 @@ def gammamap(image):
                               optimization= 'window'))
     meanBand = bandNames.map(lambda bandName: ee.String(bandName).cat('_mean'))
     stdDevBand = bandNames.map(lambda bandName:  ee.String(bandName).cat('_stdDev'))
-        
+
     z = stats.select(meanBand)
     sigz = stats.select(stdDevBand)
-    
+
     #local observed coefficient of variation
     ci = sigz.divide(z)
     #noise coefficient of variation (or noise sigma)
@@ -209,181 +223,260 @@ def gammamap(image):
     alpha = oneImg.add(cu.pow(2)).divide(ci.pow(2).subtract(cu.pow(2)))
 
     #Implements the Gamma MAP filter described in equation 11 in Lopez et al. 1990
-    q = image.select(bandNames).expression('z**2 * (z * alpha - enl - 1)**2 + 4 * alpha * enl * b() * z', { 'z': z,  'alpha':alpha,'enl': enl})
-    rHat = z.multiply(alpha.subtract(enlImg).subtract(oneImg)).add(q.sqrt()).divide(twoImg.multiply(alpha))
-  
+    q = image.select(bandNames).expression(
+        'z**2 * (z * alpha - enl - 1)**2 + 4 * alpha * enl * b() * z',
+        { 'z': z,  'alpha':alpha,'enl': enl})
+    rHat = z.multiply(alpha.subtract(enlImg).subtract(oneImg))\
+        .add(q.sqrt()).divide(twoImg.multiply(alpha))
+
     #if ci <= cu then its a homogenous region ->> boxcar filter
     zHat = (z.updateMask(ci.lte(cu))).rename(bandNames)
     #if cmax > ci > cu then its a textured medium ->> apply Gamma MAP filter
     rHat = (rHat.updateMask(ci.gt(cu)).updateMask(ci.lt(cmax))).rename(bandNames)
     #ci>cmax then its strong signal ->> retain
-    x = image.select(bandNames).updateMask(ci.gte(cmax)).rename(bandNames)  
+    x = image.select(bandNames).updateMask(ci.gte(cmax)).rename(bandNames)
     #Merge
     output = ee.ImageCollection([zHat,rHat,x]).sum()
     redone = image.addBands(output, None, True)
     final = redone.toFloat()
     return final
 
-import glob
-import urllib
-import ee.batch
-import time
-
 # downlaod functions
 def DLimg(image, directory, scale, aoi):
     """
     Downloads an image or image collection.
-    
+
     Args:
         images (ee.Image or ee.ImageCollection): images to download
-        directory (str): name of relative directory to save images to, 
-        leave as a blank string you'd like to save in current directory
+        directory (str): name of relative directory to save images to, \
+            leave as a blank string you'd like to save in current directory
 
     Returns:
         None.
-
     """
-    
+
     imageID = image.id().getInfo()
     def nextfile(imageID):
         def filenamer(imageID, i):
             name = imageID + '_' + str(i) + ".tif"
             filename = os.path.join(os.getcwd(), directory, name)
             return filename
-        
+
         i = 0
         while os.path.isfile(filenamer(imageID, i)):
             i += 1
-        return filenamer(imageID, i), i
-    
+        return filenamer(imageID, i)
+
     url = image.clip(aoi).getThumbURL({'format': 'geotiff', 'scale': scale})
 
-    filepath, i_stop = nextfile(imageID)
+    filepath = nextfile(imageID)
     urllib.request.urlretrieve(url, filepath)
     print(url, "has been downloaded to", str(filepath))
 
 def merger(directory='export'):
     """
-    Run this function after the download is complete to have gdal attempt to merge the geoTIFFs. 
-    Generally should not used on it's own.
-    
+    Run this function after the download is complete to have gdal attempt \
+        to merge the geoTIFFs. Generally should not used on it's own.
+
     Args:
         directory (str): The directory to find the unmerged TIF images in. Defaults to 'export'
-        
+
     Returns:
         None.
-    
+
     """
     tiles = glob.glob((directory+'/*.tif'))
     tiles = " ".join(tiles)
-    
+
     name = directory + "/" + tiles[tiles.find('/')+1:tiles.find('.tif')-2] + ".tif"
     print(name)
-    
+
     os.system('!gdal_merge.py -o $name $tiles')
-    
+
     if os.path.isfile(name):
         for file in os.scandir(directory):
             if file.path.endswith('.tif') and file.path.count('_')==9:
                 print(file.path, 'has been deleted!')
                 os.remove(file.path)
     else:
-        assert True, "gdal_merge was not found, try restarting the kernel and running merger(directory)"
-        
-def batchExport(images, scale, cloud_bucket='', directory='test', tryReduce=False):
+        assert True, "gdal_merge was not found, \
+try restarting the kernel and running merger(directory)"
+
+def batchExport(images, scale, coords, cloud_bucket='', directory='', tryReduce=False):
     """
-    Creates a number of ee.batch tasks equal to the number of ee.Image objects in images.
-    The images are downloaded to the Google Cloud Platform Storage glaciers_ee bin in the subdirectory set.
+    Creates a number of ee.batch tasks equal to the number of ee.Image objects in images. \
+        The images are downloaded to the Google Cloud Platform Storage glaciers_ee \
+        bin in the subdirectory set.
 
     Args:
         images (list): a list of images to export to cloudstorage
         scale (int): the scale in meters/pixel to download the images at
-        directory (str): the subdirectory to download the images to in the glaciers_ee bin. Defaults to 'export'
-        
+        directory (str): the subdirectory to download the images to in the \
+            glaciers_ee bin. Defaults to 'export'
+
     Returns:
         None.
     """
+    images_sort = images[:]
+    def start_tasks(images, scale, cloud_bucket, directory):
+        for img in images:
+            name = img.get('system:index').getInfo()
+            task = ee.batch.Export.image.toCloudStorage(**{
+                'image': img,
+                'fileNamePrefix': directory + '/' + name,
+                'region': ee.Geometry.Polygon(coords),
+                'scale': scale,
+                'crs': 'EPSG:3031',
+                'bucket': cloud_bucket,
+                'fileFormat': 'GeoTIFF',
+                'maxPixels': 10e12
+            })
+            print(name, "is being uploaded.")
+            task.start()
+            tasks.append(task)
+            active_ind.append(task.active())
+
+    def time_for_completion(active_ind, scale, rate=1.5):
+        num_imgs = active_ind.count(True)
+        time_left = (num_imgs * rect_area(coords)/scale * 1/rate * 3600)**(3/4) # hours
+
+        if time_left < 1/60:
+            time_left *= 3600
+            units = 'seconds'
+        elif time_left < 1.0:
+            time_left *= 60
+            units = 'minutes'
+        else:
+            units = 'hours'
+
+        completion_string = 'The approximate completion time is: {:.1f} {}.'\
+        .format(time_left, units)
+        return completion_string
+
+    def reduced_upload(failed_task, scale, cloud_bucket, directory):
+        failed_i = tasks.index(failed_task)
+        failed_image = images_sort[failed_i]
+        image_coordinates = failed_image.get('system:foodprint').getInfo()['coordinates']
+        image_segmented = reduce(image_coordinates)
+        n = 0
+        for coords in image_segmented.tolist():
+            name = failed_image.get('system:index').getInfo()
+            name_n = name + '_' + str(n)
+            new_aoi = ee.Geometry.Polygon([coords])
+            task = ee.batch.Export.image.toCloudStorage(**{
+                'image': failed_image,
+                'region': new_aoi,
+                'fileNamePrefix': directory + '/' + name_n,
+                'scale': scale,
+                'crs': 'EPSG:3031',
+                'bucket': cloud_bucket,
+                'fileFormat': 'GeoTIFF',
+                'maxPixels': 10e12
+            })
+            task.start()
+            tasks.append(task)
+            active_ind.append(task.active())
+            images_sort.append(failed_image.clip(new_aoi))
+            n += 1
+
+        tasks.pop(failed_i)
+        active_ind.pop(failed_i)
+        images_sort.pop(failed_i)
+
+
+    def status_check(tasks):            
+        tasks_copy = tasks[:]
+        
+        for task in tasks_copy:
+            if task.status()['state'].lower() == "failed" and tryReduce:
+                print('Task #{} has failed.'.format(task.id),
+                      'Trying geometrically reduced uploads.')
+                reduced_upload(task, scale, cloud_bucket, directory)
+            elif task.status()['state'].lower() == "failed":
+                active_ind[tasks.index(task)] = False
+                print('The upload has failed, most likely due to the GEE', 
+                      '10e12 pixel limitation. Try a smaller sized geoJSON or tryReduce.',
+                      'The cloud_bucket set should also be checked to see it exists.')
+            elif task.status()['state'].lower() == "completed":
+                active_ind[tasks.index(task)] = False
+            else:
+                print('{} is {}'.format('Task #' + task.id,
+                                        task.status()['state'].lower()))
+                
     tasks = []
     active_ind = []
-    n = 0
-    for img in images:
-        name = img.get('system:index').getInfo()
-        task = ee.batch.Export.image.toCloudStorage(**{
-            'image': img,
-            'fileNamePrefix': directory + '/' + name,
-            'scale': scale,
-            'crs': 'EPSG:3031',
-            'bucket': cloud_bucket,
-            'fileFormat': 'GeoTIFF',
-            'maxPixels': 10e12
-        })
-        print(name, "is being uploaded.")
-        task.start()
-        tasks.append(task)
-        active_ind.append(task.active())
+    STARTED_TASKS = False
+    start_time = dt.datetime.now(pytz.utc)
+
+    while True:
+        try:
+            if not STARTED_TASKS:
+                start_tasks(images, scale, cloud_bucket, directory)
+                STARTED_TASKS = True
     
-    while True in active_ind:
-        rate = 3230 # mb/hr 
-        num_imgs = len(active_ind)    
-        time_for_completion = 180/rate * 30/scale * num_imgs
-        units = 'hours'
+            print(time_for_completion(active_ind, scale))
+            
+            print('----------------------------------------------------')
+            time.sleep(5*active_ind.count(True)**(1/2))
+            
+            status_check(tasks)
+                
+            if True not in active_ind:
+                break
+        except KeyboardInterrupt:
+            for task in tasks:
+                task.cancel()
+            break
+        
+    def get_new(start_time):
+        bucket = client.get_bucket(cloud_bucket)
+        blobs = client.list_blobs(bucket)
+        new_blobs = []
+        for blob in blobs:
+            dateandtime = blob.updated
+            if dateandtime > start_time:
+                new_blobs.append(blob)
+                
+        return new_blobs
+    
+    def download_list_of_blobs(list_of_blobs):
+        def nextfile(blob_name):
+            def filenamer(i, blob_name):
+                name = blob_name[:-4] + '_' + str(i) + ".tif"
+                filename = os.path.join(os.getcwd(), name)
+                return filename
+            i = 0
+            while os.path.isfile(filenamer(i, blob_name)):
+                i += 1
+            return filenamer(i, blob_name)
+        
+        for blob in list_of_blobs:
+            filename = nextfile(blob_name=blob.name)
+            try:
+                with open(filename, 'w'):
+                    pass
+                blob.download_to_filename(filename)
+                print('Downloading image as {}'.format(os.path.abspath(filename)))
+            except FileNotFoundError:
+                print('ERROR: Directory does not exist on disk!',
+                      'Please create it first.')
+            
+    new = get_new(start_time)
+    download_list_of_blobs(new)
 
-        if time_for_completion < 1.0:
-            time_for_completion *= 60
-            units = 'minutes'
-
-        print('The approximate completion time is: {:.2f} {}.'.format(time_for_completion, units))
-        new_tasks = []
-        for i, task in enumerate(tasks):
-#             try:
-            print('{} is {}'.format('Task #' + task.id, task.status()['state']).lower())
-            if task.status()['state'].lower() == "failed":
-                image = images[i]
-                image_segmented = reduce(image.get('system:footprint').getInfo()['coordinates'])
-                tasks.pop(i)
-                active_ind.pop(i)
-                print('{} has failed.'.format(task.id))
-                print('Adding {} new segemented images to be exported.'.format(len(image_segmented.tolist())))
-                for coords in image_segmented.tolist():
-                    name_n = name + '_' + str(n)
-                    task = ee.batch.Export.image.toCloudStorage(**{
-                        'image': image,
-                        'region': ee.Geometry.Polygon([coords]),
-                        'fileNamePrefix': directory + '/' + name_n,
-                        'scale': scale,
-                        'crs': 'EPSG:3031',
-                        'bucket': 'glaciers_ee',
-                        'fileFormat': 'GeoTIFF',
-                        'maxPixels': 10e12
-                    })
-                    images.append(image)
-                    task.start()
-                    new_tasks.append(task)
-                    active_ind.append(task.active())
-                    n += 1
-#             except:
-#                 print('error!')
-            active_ind[i] = task.active()
-        tasks = tasks + new_tasks
-        print('----------------------------------------------------')
-        time.sleep(5*active_ind.count(True)**(1/2))
-
-import matplotlib.pyplot as plt
-
-# extra functions
 # folium maps
 def add_ee_layer(self, ee_image_object, vis_params, name):
     """
     Adds an ee.Image layer to a folium map
-    
-    Args: 
+
+    Args:
         ee_image_object (ee.Image): An image to place on folium map
         vis_params (dict): Visual parameters to display the image. See GEE "Image Visualization"
         name (str): Name of layer on folium map
-        
+
     Returns:
         None.
-        
+
     """
     map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
     folium.raster_layers.TileLayer(
@@ -393,40 +486,41 @@ def add_ee_layer(self, ee_image_object, vis_params, name):
         overlay = True,
         control = True
     ).add_to(self)
-  
+
 folium.Map.add_ee_layer = add_ee_layer
 
-        
+
 def eeICtolist(imageCollection):
     """
-    Converts an ee.ImageCollection to a python list of ee.Image objects. 
-    
+    Converts an ee.ImageCollection to a python list of ee.Image objects.
+
     Args:
         imageCollection (ee.ImageCollection): the collection to be converted to a list
 
     Returns:
         images (list): the list of images in the ee.ImageCollection
-        
+
     """
     size = imageCollection.size()
     eeList = imageCollection.toList(size)
     aslist = []
     for i in range(size.getInfo()):
         aslist.append(ee.Image(eeList.get(i)))
-        
+
     return aslist
 
 def dispHist(hists):
     """
-    Plots 1 histogram for each histogram passed into it. 
-    
+    Plots 1 histogram for each histogram passed into it.
+
     Args:
-        hists (list): Can either be a histogram from Area.hist() or a list of histograms [Area.hist(img1), Area.hist(img2)]
+        hists (list): Can either be a histogram from Area.hist() or \
+            a list of histograms [Area.hist(img1), Area.hist(img2)]
 
     Returns:
         None.
     """
-    assert type(hists) is list, "Type of hists should be a list from self.hist, or a list of lists"
+    assert isinstance(hists, list), "Type of hists should be a list from self.hist, or a list of lists"
     a = np.array(hists)
     if a.ndim == 3:
         # case for hists is a list of histograms
@@ -444,11 +538,11 @@ def dispHist(hists):
         plt.grid()
         plt.plot(x, y, '.')
         plt.show()
-        
+
 def get_dates(images):
-    """    
+    """
     Returns the dates of each image in imageCllection
-    
+
     Args:
         images (ee.Image or ee.ImageCollection): Image/images to get the date of
 
@@ -456,20 +550,22 @@ def get_dates(images):
         dates (str or list): The dates that the images were taken on
     """
     try:
-        if type(images) == ee.ImageCollection:
+        if isinstance(images, ee.ImageCollection):
             dates = ee.List(images
                             .aggregate_array('system:time_start')
                             .map(lambda time_start:
                                  ee.Date(time_start).format('Y-MM-dd'))).getInfo()
-        elif type(images) == ee.Image:
+        elif isinstance(images, ee.Image):
             dates = ee.Date(images.get('system:time_start').getInfo()).format("yyyy-MM-dd").getInfo()
 
-        else: 
-            assert False, "Image is not of type ee.Image or ee.ImageCollection"
+        else:
+            assert True, "Image is not of type ee.Image or ee.ImageCollection"
         return dates
     except:
-        print('ERROR: Something went wrong and the Image does not have the system:time_start property.')
-        print('If you need the date, you can manually retrieve it from the system:index property')
+        print('ERROR: Something went wrong and the Image does \
+not have the system:time_start property.')
+        print('If you need the date, you can manually retrieve \
+it from the system:index property')
         return None
 
 
@@ -631,7 +727,7 @@ class Area():
                 pm_best = percent_missing(best)
                 for i in range(as_list.length().getInfo()):
                     latest = ee.Image(as_list.get(i)).clip(self.get_aoi())
-                    pm_latest = percentMissing(latest)
+                    pm_latest = percent_missing(latest)
                     if pm_latest < 0.01:
                         best = latest
                         pm_best = pm_latest
@@ -648,7 +744,7 @@ class Area():
                       time_range, "starting on",
                       ee.Date(current_start_time).format('YYYY-MM-dd').getInfo())
                 print('The best image had {:.2f}% pixels of data missing. \
-                      Try selecting a smaller area.'.format(pm_best*100))
+Try selecting a smaller area.'.format(pm_best*100))
 
             current_start_time = current_end_time
 
@@ -665,17 +761,49 @@ class Area():
         Returns:
             latest (ee.Image): The latest image for this area
         """
-
+        def validity(image, threshold = 80):    
+            def percent_missing(image):
+                """
+                Helper function that returns the % of the image data missing in the first band.
+            
+                Args:
+                    image (ee.Image): The image to calculate the % missing of
+            
+                Returns:
+                    percentMissing (float): The % missing of the image data compared \
+                        to the self.get_aoi()
+                """
+                missing = ee.Number(image.mask().expression('1-b(0)').reduceRegion(
+                    ee.Reducer.sum(), self.get_aoi(), scale=100, maxPixels=10e8).get('constant'))
+                totalArea = ee.Number(ee.Image(1).mask().reduceRegion(
+                    ee.Reducer.sum(), self.get_aoi(), scale=100, maxPixels=10e8).get('constant'))
+            
+                pm = missing.divide(totalArea).getInfo()
+                return pm
+            
+            return percent_missing(image)*100 < (100 - threshold)
+        
         img_col = self.apply_filters(collection=collection,
                                      end_date=ee.Date(date.today().strftime("%Y-%m-%d")))
-        latest = img_col.first().clip(self.get_aoi())
-
-        return latest
+        eelist = img_col.toList(img_col.size())
+        
+        for i in range(100):
+            latest = ee.Image(eelist.get(i)).clip(self.get_aoi())
+            try:
+                if validity(latest):
+                    return latest
+                    break
+            except:
+                print('No images within threshold')
+                break
+        return None
 
     def append_elevation_info(self, image):
         """
         Adds the elevation information to each image passed into it. \
             The image argument must be an ee.Image.
+            Warning: this method takes from the mosaic data, so it does not
+            vary with time. 
 
         Args:
             images (ee.Image): Image to add the elevation information.
@@ -684,11 +812,15 @@ class Area():
         Returns:
             multi (ee.Image): Image with added elevation as a new band
         """
+        assert isinstance(image, ee.Image), "Image must be a singular ee.Image object"
+
+
         elv_collection = 'UMN/PGC/REMA/V1_1/8m'
         aoi = self.get_aoi()
 
         elevation = ee.Image(elv_collection).clip(aoi)
         multi = ee.Image([image, elevation])
+        
         return multi
 
     def normalize_all_bands(self, image):
@@ -704,6 +836,8 @@ class Area():
             dicts (list): A list of ee.Dictionary containing the min and max \
                 of each band.
         """
+        assert isinstance(image, ee.Image), "Image must be a singular ee.Image object"
+
         aoi = self.get_aoi()
         bands = image.bandNames().getInfo()
         img_bands = []
@@ -720,6 +854,53 @@ class Area():
         image_norm = ee.Image(img_bands)
 
         return image_norm, dicts
+    
+    def segment(self, image, compactness=100, gammafilter=True):
+        """
+        (Warning: removes the angle band)
+        
+        Segments an image or images using the Google Earth Engine Algorithm \
+            SNIC algorithm
+        
+        Args:
+            images (ee.Image, ee.ImageCollection, list): Image/images to segment
+            compactness (int): Number representing the approximate size of clusters
+            gammafilter (bool): If enabled, will filter the images before segmentation
+            
+        Returns:
+            segmented (same as images): The image/images with added bands for
+            clusters/seeds, and the original bands adjusted to represent the 
+            mean in each cluster
+        """
+        assert isinstance(image, (
+            ee.Image, ee.ImageCollection, list)
+            ), "Image must be either ee.Image, ee.ImageCollection, or list of ee.Images"
+        
+        system_index = image.get('system:index').getInfo() + '_segmentation'
+        
+        if gammafilter:
+            image = self.gammafilter(image)
+        
+        def map_segment(image):
+            return ee.Algorithms.Image.Segmentation.SNIC(
+                image, **{'compactness': compactness,
+                          'connectivity': 8}).set('system:index', system_index)
+        def remove_angle(image):
+            bands_angle_removed = image.bandNames().filter(
+                ee.Filter.neq('item', 'angle'))
+            return image.select(bands_angle_removed)
+        
+        if isinstance(image, ee.Image):
+            image = remove_angle(image)    
+            segmented = map_segment(image)
+        elif isinstance(image, ee.ImageCollection):
+            image = self.gammafilter(image)
+            segmented = image.map(map_segment)
+        elif isinstance(image, list):
+            image = self.gammafilter(image)
+            segmented = list(map(map_segment, image))
+        return segmented
+        
 
     def gammafilter(self, image):
         """
@@ -733,6 +914,10 @@ class Area():
             filtered (ee.Image): The filtered image/images
 
         """
+        assert isinstance(image, (
+            ee.Image, ee.ImageCollection, list)
+            ), "Image must be either ee.Image, ee.ImageCollection, or list of ee.Images"
+        
         if isinstance(image, ee.Image):
             filtered = gammamap(image)
         elif isinstance(image, ee.ImageCollection):
@@ -753,6 +938,8 @@ class Area():
         Returns:
             None.
         """
+        assert isinstance(image, ee.Image), "Image must be a singular ee.Image object"
+
         location = self.get_aoi().centroid().coordinates().getInfo()[::-1]
         # folium doesn't support crs other than crs 4326
         fmap = folium.Map(location=location, zoom_start=12)
@@ -775,7 +962,7 @@ class Area():
             fmap.add_child(folium.LayerControl())
             display(fmap)
 
-    def download(self, image, directory, scale=50, add_elevation=True):
+    def download(self, image, scale, cloud_bucket, directory, tryReduce=False):
         """
         Downloads either an image or an image collection to a directory.
         (note: I couldn't get geemap to download singular images, but
@@ -788,47 +975,36 @@ class Area():
             images (ee.Image or ee.ImageCollection or list): image/images to download
             directory (str): name of relative directory to save images to,
             leave as a blank string you'd like to save in current directory
-            scale (float): The scale to download at in meters/pixel. By default
-            set to 50 meters per pixel
+            scale (float): The scale to download at in meters/pixel.
 
         Returns:
             None.
         """
+        assert isinstance(image, (
+            ee.Image, ee.ImageCollection, list)
+            ), "Image must be either ee.Image, ee.ImageCollection, or list of ee.Images"
+
         if isinstance(image, ee.Image):
-            try:
-                image_segmented = reduce(self.get_coords())
-                bands = image.bandNames().getInfo()
-
-                for geometry in image_segmented:
-                    geo_obj = Area(geoJSONer(geometry))
-                    geo_img = ee.Image(image.get('system:id').getInfo())
-                    if add_elevation:
-                        geo_img_elv = geo_obj.append_elevation_info(geo_img)
-                        download = ee.Image([geo_img_elv.select(bands[0]),
-                                             geo_img_elv.select(bands[1]),
-                                             geo_img_elv.select('elevation')]
-                                            ).clip(geo_obj.get_aoi())
-                    else:
-                        download = ee.Image([geo_img.select(bands[0]),
-                                           geo_img.select(bands[1])]).clip(geo_obj.get_aoi())
-
-                    DLimg(download, directory=directory, scale=scale, aoi=geo_obj.get_aoi())
-                merger(directory)
-            except:
-                print('When the images are finished uploading, they will be avaiable at:')
-                print('https://console.cloud.google.com/storage/browser/glaciers_ee')
-                batchExport([image], directory=directory, scale=scale)
+            print('When the images are finished uploading, they will be avaiable at:')
+            print(f'https://console.cloud.google.com/storage/browser/{cloud_bucket}')
+            batchExport([image], scale=scale, cloud_bucket=cloud_bucket,
+                        directory=directory, tryReduce=tryReduce,
+                        coords=self.get_coords())
 
         elif isinstance(image, list):
             print('When the images are finished uploading, they will be avaiable at:')
-            print('https://console.cloud.google.com/storage/browser/glaciers_ee')
-            batchExport(image, directory=directory, scale=scale)
+            print(f'https://console.cloud.google.com/storage/browser/{cloud_bucket}')
+            batchExport(image, scale=scale, cloud_bucket=cloud_bucket,
+                            directory=directory, tryReduce=tryReduce,
+                            coords=self.get_coords())
 
         elif isinstance(image, ee.ImageCollection):
             print('When the images are finished uploading, they will be avaiable at:')
-            print('https://console.cloud.google.com/storage/browser/glaciers_ee')
+            print(f'https://console.cloud.google.com/storage/browser/{cloud_bucket}')
             aslist = eeICtolist(image)
-            batchExport(aslist, directory=directory, scale=scale)
+            batchExport(aslist, scale=scale, cloud_bucket=cloud_bucket,
+                            directory=directory, tryReduce=tryReduce,
+                            coords=self.get_coords())
 
     def hist(self, image, band=0):
         """
@@ -841,6 +1017,7 @@ class Area():
         Returns:
             hist (list): The histogram created
         """
+        assert isinstance(image, ee.Image), "Image must be a singular ee.Image object"
         aoi = self.get_aoi()
         bands = image.bandNames()
 
@@ -867,6 +1044,7 @@ class Area():
         Return:
             stats (dict): A dictionary containing statistics about the image band.
         """
+        assert isinstance(image, ee.Image), "Image must be a singular ee.Image object"
         bands = image.bandNames().getInfo()
 
         stats = {}
@@ -877,3 +1055,5 @@ class Area():
         stats['skew'] = image.select(bands[band]).reduceRegion(ee.Reducer.skew(),
                           self.get_aoi()).get(bands[band]).getInfo()
         return stats
+
+# yay
