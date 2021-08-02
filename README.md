@@ -15,13 +15,9 @@ The only optional package is `GDAL`, which is known to be a problematic install.
 
 ## Tutorial
 
-To use this package, start by importing. On import, you must authenticate to Google Earth Engine's servers. You can either authenticate through browser or by providing a service account and private key json file. If the latter method is selected, you will have to manually input the service account email (see below) and place the private key json file in the current working directory for it to be automatically found:
+To use this package, start by importing. On import, you must authenticate to Google Earth Engine's servers. You can authenticate by providing a service account and private key json file. You will have to manually input the service account email (see below) and place the private key json file in the current working directory for it to be automatically found:
 ```
 In [1]: import geearea.area as ga
-
-Would you like to authenticate through browser (input "1")
-or service account and private key (input "2")? 2
-
 Enter your service account email: jon***@***.iam.gserviceaccount.com
 ```
 
