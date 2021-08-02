@@ -1,0 +1,5 @@
+folium
+earthengine-api
+matplotlib
+numpy
+google-cloud-storage
