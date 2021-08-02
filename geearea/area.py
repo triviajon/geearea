@@ -6,6 +6,8 @@ Created on Tue Jul 20 10:48:31 2021
 """
 
 import os
+import subprocess
+import threading
 from datetime import date
 import glob
 import time
@@ -34,29 +36,23 @@ def auth():
     """
     while True:
         try:
-            response = int(input('Would you like to authenticate through browser (input "1") \
-or service account and private key (input "2")? '))
-            if response == 1:
-                ee.Authenticate()
-                ee.Initialize()
-                client_obj = storage.Client()
-            elif response == 2:
-                try:
-                    service_account = input("Enter your service account email: ")
-                    json_file = ''
-                    for file in os.listdir():
-                        if file.endswith('.json'):
-                            json_file = file
-                            break
-                    credentials = ee.ServiceAccountCredentials(service_account, json_file)
-                    ee.Initialize(credentials=credentials)
-                    client_obj = storage.Client(credentials=credentials)
-                except:
-                    print("The JSON private key file could not be found or was inconsistent \
-with the service account. Please only one key in the current file directory.")
+            service_account = input("Enter your service account email: ")
+            json_file = ''
+            for file in os.listdir():
+                if file.endswith('.json'):
+                    json_file = file
+                    break
+            credentials = ee.ServiceAccountCredentials(service_account, json_file)
+            ee.Initialize(credentials=credentials)
+            client_obj = storage.Client(credentials=credentials)        
             break
+        except KeyboardInterrupt:
+            break
+        
         except:
-            print("I didn't understand your response. Please input either 1 or 2.")
+            print("The JSON private key file could not be found or was inconsistent \
+    with the service account. Please only one key in the current file directory.")
+    
     return client_obj
 
 client = auth()
@@ -149,20 +145,27 @@ def reduce(listOfCoords):
 
 
 def geoJSONer(coords):
-    coords = coords.tolist()
+    try:
+        coords = coords.tolist()
+    except:
+        pass
+    
     geoJSON = {
-    "type": "FeatureCollection",
-    "features": [
-        {
-          "type": "Feature",
-          "properties": {},
-          "geometry": {
-            "type": "Polygon",
-            "coordinates": coords
-                      }
-        }
-      ]
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [
+                coords
+              ]
+            }
+          }
+        ]
     }
+
     return geoJSON
 
 def degeoJSONer(geoJSON):
@@ -321,6 +324,10 @@ def batchExport(images, scale, coords, cloud_bucket='', directory='', tryReduce=
     def start_tasks(images, scale, cloud_bucket, directory):
         for img in images:
             name = img.get('system:index').getInfo()
+            try: 
+                name + ''
+            except:
+                name = img.get('system:id').getInfo().replace("/", "")
             task = ee.batch.Export.image.toCloudStorage(**{
                 'image': img,
                 'fileNamePrefix': directory + '/' + name,
@@ -338,8 +345,11 @@ def batchExport(images, scale, coords, cloud_bucket='', directory='', tryReduce=
 
     def time_for_completion(active_ind, scale, rate=1.5):
         num_imgs = active_ind.count(True)
-        time_left = (num_imgs * rect_area(coords)/scale * 1/rate * 3600)**(3/4) # hours
-
+        try:
+            time_left = (num_imgs * rect_area(coords)/scale * 1/rate * 3600)**(3/4) # hours
+        except:
+            time_left = 0
+            
         if time_left < 1/60:
             time_left *= 3600
             units = 'seconds'
@@ -464,6 +474,193 @@ def batchExport(images, scale, coords, cloud_bucket='', directory='', tryReduce=
     new = get_new(start_time)
     download_list_of_blobs(new)
 
+def cloudtoeecommand(cloud_bucket, directory, assetname, geeusername):
+    """
+    Returns an ee.Image from a cloud storage asset. Requirement:
+        must have a username and main folder with Google code editor
+    
+    Args: 
+        cloud_bucket (str): string describing the name of the cloud bucket
+        directory (str): directory describing the directory where the file is stored
+        assetname (str): the filename of the asset (without .tif)
+        geeusername (str): your username to store the asset in the code editor
+        
+    Returns:
+        eeimage (ee.Image): the ee.Image object of the google cloud asset
+    """
+    
+    if assetname.endswith('.tif'):
+        assetname = assetname[:-4]
+    
+    asset_id = 'users/' + geeusername + '/' + assetname
+    dl_dir = 'gs://' + cloud_bucket + '/' + directory
+    dl_file = dl_dir + '/' + assetname + '.tif'
+        
+    command = f'earthengine upload image --asset_id={asset_id} {dl_file}'
+    
+    pop = subprocess.Popen(command, env=os.environ.copy(),
+                            shell=True, stdout=subprocess.PIPE)
+    result = pop.stdout.read().decode()
+    taskid = result[result.index(':')+2:result.index('\r')]
+    
+    while True:
+        try:
+            command = f'earthengine task info {taskid}'
+            pop = subprocess.Popen(command, env=os.environ.copy(),
+                                shell=True, stdout=subprocess.PIPE)
+            status = pop.stdout.read().decode().split(' ')[3]
+            if 'COMPLETED' in status:
+                break
+            elif 'FAILED' in status:
+                return None
+                break
+            print(f'Task #{taskid} is {status.lower().strip()}')
+            time.sleep(8)
+        except:
+            command = f'earthengine task cancel {taskid}'
+            pop = subprocess.Popen(command, env=os.environ.copy(),
+                                shell=True, stdout=subprocess.PIPE)
+        
+    command = f'earthengine acl set public {asset_id}'
+    pop = subprocess.Popen(command, env=os.environ.copy(),
+                           shell=True, stdout=subprocess.PIPE)
+    time.sleep(1)
+
+    if assetname.startswith('S1'):    
+        def extract_date(assetname):
+            val = -1
+            for i in range(4):
+                val = assetname.find("_", val+1)
+            datestr = assetname[val+1:assetname.find("_", val+1)]
+            formatted_date = datestr[:4] + '-' + datestr[4:6] + '-' + datestr[6:11] \
+                + ':' + datestr[11:13] + ':' + datestr[13:15]
+            return formatted_date
+        
+        command = f'earthengine asset set --time_start {extract_date(assetname)} {asset_id}'
+        pop = subprocess.Popen(command, env=os.environ.copy(),
+                                shell=True, stdout=subprocess.PIPE)
+    eeimage = ee.Image(asset_id)
+    print(f'Task #{taskid} is available at {asset_id}')
+    
+    return eeimage
+
+def multicloudtoee(cloud_bucket, directory, geeusername):
+    '''
+    Creates callable image assets from all the Tiffs in a Cloud Directory. \
+        Requirement: must have a username and main folder with Google code editor
+    
+    Args: 
+        cloud_bucket (str): string describing the name of the cloud bucket
+        directory (str): directory describing all the images you'd like to upload
+        geeusername (str): your username to store the asset in the code editor
+        
+    Returns:
+        None
+    '''
+    bucket = client.get_bucket(cloud_bucket)
+    blobs = client.list_blobs(bucket)
+    
+    threads = []
+    assets = []
+    
+    for blob in blobs:
+        
+        ind = str(blob).find('/')
+        find = ' ' + directory
+        if str(blob)[ind-1:ind-len(find)-1:-1] != find[::-1]: 
+            # if directory doesn't match, continue to next iter
+            continue
+        
+        if str(blob)[ind:str(blob).find(',', ind)].strip() == '/':
+            # if blob is the actual directory and not a file, continue
+             continue
+        
+        blob_info = str(blob).split(' ')
+        
+        assetname = blob_info[2][blob_info[2].find('/')+1:-1]
+        if assetname.endswith('.tif'):
+            assetname = assetname[:-4]
+        asset_id = 'users/' + geeusername + '/' + assetname
+        assets.append(asset_id)
+        def do_convert():
+            cloudtoeecommand(cloud_bucket, directory, assetname, geeusername)
+        
+        while True:
+            alive_count = 0
+            for thread in threads:
+                if thread.is_alive(): alive_count += 1 
+            if alive_count < 10:
+                break
+            else:
+                time.sleep(10)
+                print(f'Alive count: {alive_count}')
+            
+        t = threading.Thread(target=do_convert)
+        t.daemon = True
+        threads.append(t)
+        t.start()
+
+    for i in range(len(threads)):
+        threads[i].join()
+
+    image_objs_list = [ee.Image(asset) for asset in assets]
+
+    return image_objs_list
+
+    '''
+    Creates callable image assets from all the Tiffs in a Cloud Directory. \
+        Requirement: must have a username and main folder with Google code editor
+    
+    Args: 
+        cloud_bucket (str): string describing the name of the cloud bucket
+        directory (str): directory describing all the images you'd like to upload
+        geeusername (str): your username to store the asset in the code editor
+        
+    Returns:
+        None
+    '''
+    bucket = client.get_bucket(cloud_bucket)
+    blobs = client.list_blobs(bucket)
+    
+    threads = []
+    
+    for blob in blobs:
+        
+        ind = str(blob).find('/')
+        find = ' ' + directory
+        if str(blob)[ind-1:ind-len(find)-1:-1] != find[::-1]: 
+            # if directory doesn't match, continue to next iter
+            continue
+        
+        if str(blob)[ind:str(blob).find(',', ind)].strip() == '/':
+            # if blob is the actual directory and not a file, continue
+             continue
+        
+        blob_info = str(blob).split(' ')
+        
+        def do_convert():
+            assetname = blob_info[2][blob_info[2].find('/')+1:-1]
+            cloudtoeecommand(cloud_bucket, directory, assetname, geeusername)
+        
+        while True:
+            alive_count = 0
+            for thread in threads:
+                if thread.is_alive(): alive_count += 1 
+            if alive_count < 10:
+                break
+            else:
+                time.sleep(10)
+                print(f'Alive count: {alive_count}')
+            
+        t = threading.Thread(target=do_convert)
+        t.daemon = True
+        threads.append(t)
+        t.start()
+
+    for i in range(len(threads)):
+        threads[i].join()
+
+    return None
 # folium maps
 def add_ee_layer(self, ee_image_object, vis_params, name):
     """
@@ -569,7 +766,7 @@ it from the system:index property')
         return None
 
 
-class Area():
+class Area:
     """
     This is the main class. Defined by the geoJSON inputed by the user, \
         it contains methods for displaying, operating on, and downloading
@@ -660,7 +857,7 @@ class Area():
 
     def one_per(self, time_range, collection='COPERNICUS/S1_GRD_FLOAT',
                       start_date=ee.Date(0),
-                      end_date=ee.Date('2021-06-24'),
+                      end_date=ee.Date(date.today().isoformat()),
                       tRP1=None, tRP2=None, res=None, ins=None):
         """
         Applies filters to create a LIST with one ee.Image per time_range.
@@ -679,7 +876,7 @@ class Area():
                 for any instrument mode
 
         Returns:
-            img_set (ee.ImageCollection): An image collection with the area
+            collected_imgs (ee.ImageCollection): An image collection with the area
             of geoJSON and the proper filters applied
         """
         def percent_missing(image):
@@ -750,7 +947,7 @@ Try selecting a smaller area.'.format(pm_best*100))
 
         return collected_imgs
 
-    def latest_img(self, collection='COPERNICUS/S1_GRD_FLOAT'):
+    def latest_img(self, collection='COPERNICUS/S1_GRD_FLOAT', threshold=80):
         """
         Grabs the latest image in the given collection.
 
@@ -761,7 +958,7 @@ Try selecting a smaller area.'.format(pm_best*100))
         Returns:
             latest (ee.Image): The latest image for this area
         """
-        def validity(image, threshold = 80):    
+        def validity(image, threshold):
             def percent_missing(image):
                 """
                 Helper function that returns the % of the image data missing in the first band.
@@ -779,23 +976,20 @@ Try selecting a smaller area.'.format(pm_best*100))
                     ee.Reducer.sum(), self.get_aoi(), scale=100, maxPixels=10e8).get('constant'))
             
                 pm = missing.divide(totalArea).getInfo()
+
                 return pm
             
             return percent_missing(image)*100 < (100 - threshold)
         
-        img_col = self.apply_filters(collection=collection,
-                                     end_date=ee.Date(date.today().strftime("%Y-%m-%d")))
+        img_col = self.apply_filters(collection=collection)
         eelist = img_col.toList(img_col.size())
         
-        for i in range(100):
+        for i in range(min(50, img_col.size().getInfo())):
             latest = ee.Image(eelist.get(i)).clip(self.get_aoi())
-            try:
-                if validity(latest):
-                    return latest
-                    break
-            except:
-                print('No images within threshold')
+            if validity(latest, threshold=threshold):
+                return latest
                 break
+        print('No images within threshold')
         return None
 
     def append_elevation_info(self, image):
@@ -1055,5 +1249,233 @@ Try selecting a smaller area.'.format(pm_best*100))
         stats['skew'] = image.select(bands[band]).reduceRegion(ee.Reducer.skew(),
                           self.get_aoi()).get(bands[band]).getInfo()
         return stats
+    
+class CustomCollection(Area):
+    """
+    This is a subclass of the main class. Use it on importing images from \
+        Google Cloud Storage. Standard operations can be applied like 
+        gammafilter and segmentation.
 
+    Args: 
+        cloud_bucket (str): string describing the name of the cloud bucket
+        directory (str): directory describing the directory where the files are stored
+        geeusername (str): your username to store the asset in the code editor
+
+    """
+    def __init__(self, cloud_bucket, directory, geeusername):
+        bucket = client.get_bucket(cloud_bucket)
+        blobs = client.list_blobs(bucket)
+        assets = []
+        
+        def all_exists(blobs, directory):
+            command = f'earthengine ls users/{geeusername}'
+            pop = subprocess.Popen(command, env=os.environ.copy(),
+                                shell=True, stdout=subprocess.PIPE)
+            output = pop.stdout.read().decode()
+            for blob in blobs:
+
+                ind = str(blob).find('/')
+                find = ' ' + directory
+                if str(blob)[ind-1:ind-len(find)-1:-1] != find[::-1]: 
+                    # if directory doesn't match, continue to next iter
+                    continue
+                
+                if str(blob)[ind:str(blob).find(',', ind)].strip() == '/':
+                    # if blob is the actual directory and not a file, continue
+                     continue
+                 
+                blob_info = str(blob).split(' ')
+                
+                assetname = blob_info[2][blob_info[2].find('/')+1:-1]
+                if assetname.endswith('.tif'):
+                    assetname = assetname[:-4]
+                assets.append(assetname)
+                
+
+                if (geeusername + '/' + assetname) not in output:
+                    return False
+            return True
+        
+        if all_exists(blobs, directory):
+            assetlist = ['users/'+geeusername+'/'+assetname for assetname in assets]
+            self.eelist = [ee.Image(asset) for asset in assetlist]
+        else:
+            self.eelist = multicloudtoee(cloud_bucket, directory, geeusername)
+        geoJSON = geoJSONer(self.eelist[0].get('system:footprint').getInfo()['coordinates'])
+        
+        super().__init__(geoJSON)
+        
+        unbounded = [[[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]]]
+        if self.coords == unbounded:
+            new = [[[-179, -85],[179, -85],[179, 85],[-179, 85],[-179, -85]]]
+            self.coords = new
+            self.aoi = ee.Geometry.Polygon(self.coords, proj='EPSG:4326',
+                                           geodesic=False, evenOdd=True, maxError=1)
+        
+    def get_coords(self):
+        """
+        Gets the coordinates defined by the geoJSON.
+
+        Args:
+            None.
+
+        Returns:
+            self.coords (list): The coordinates defined by the geoJSON.
+
+        """
+            
+        return self.coords
+
+    def get_aoi(self):
+        """
+        Gets the AOI defined by the coordinates.
+
+        Args:
+            None.
+
+        Returns:
+            self.aoi (list): The AOI defined by the coordinates.
+
+        """
+        return self.aoi
+    
+    def latest_img(self, threshold=80):
+        """
+        Grabs the latest image in the given collection.
+
+        Args:
+            collection (str): A collection name from GEE's public collections data. \
+                Defaults to S1_GRD_FLOAT
+
+        Returns:
+            latest (ee.Image): The latest image for this area
+        """
+        
+        img_col = self.apply_filters()
+        eelist = img_col.toList(img_col.size())
+        
+        latest = ee.Image(eelist.get(0)).clip(self.get_aoi())
+        return latest
+    
+    def apply_filters(self, start_date=ee.Date(0),
+                      end_date=ee.Date(date.today().isoformat()),
+                      earliest_first=False):
+        if isinstance(start_date, (str, int)):
+            start_date = ee.Date(start_date)
+        if isinstance(end_date, (str, int)):
+            end_date = ee.Date(end_date)
+
+        img_set = ee.ImageCollection(self.eelist)
+
+        sort = img_set.sort('system:time_start', opt_ascending=earliest_first)    
+        return sort
+    
+    def one_per(self, time_range, start_date=ee.Date(0),
+                      end_date=ee.Date(date.today().isoformat())):
+        """
+        Applies filters to create a LIST with one ee.Image per time_range.
+
+        Args:
+            time_range (str): day, month, or year. Specifies the approximate \
+                time range between photos.
+            start_date (ee.Date): Start date of filtering
+            end_date (ee.Date): End date of filtering
+
+        Returns:
+            collected_imgs (ee.ImageCollection): An image collection with the area
+            of geoJSON and the proper filters applied
+        """
+        def percent_missing(image):
+            """
+            Helper function that returns the % of the image data missing in the first band.
+
+            Args:
+                image (ee.Image): The image to calculate the % missing of
+
+            Returns:
+                percentMissing (float): The % missing of the image data compared \
+                    to the self.get_aoi()
+            """
+            missing = ee.Number(image.mask().expression('1-b(0)').reduceRegion(
+                ee.Reducer.sum(), self.get_aoi(), scale=100, maxPixels=10e8).get('constant'))
+            totalArea = ee.Number(ee.Image(1).mask().reduceRegion(
+                ee.Reducer.sum(), self.get_aoi(), scale=100, maxPixels=10e8).get('constant'))
+
+            percent_missing = missing.divide(totalArea).getInfo()
+            return percent_missing
+
+        if isinstance(start_date, (str, int)):
+            start_date = ee.Date(start_date)
+        if isinstance(end_date, (str, int)):
+            end_date = ee.Date(end_date)
+
+        end_date_time = end_date
+
+        current_start_time = start_date
+
+        collected_imgs = []
+        while ee.Algorithms.If(
+                ee.Number.expression("x > 0", {
+                    'x': end_date_time.difference(current_start_time, 'day')
+                    }), 1, 0).getInfo():
+            (current_start_time, current_end_time) = (ee.Date(current_start_time)
+                                                      .getRange(time_range).getInfo()['dates'])
+            img_col = self.apply_filters(start_date=current_start_time,
+                              end_date=current_end_time, earliest_first=True)
+            try:
+                as_list = img_col.toList(img_col.size())
+                best = ee.Image(as_list.get(0)).clip(self.get_aoi())
+                pm_best = percent_missing(best)
+                for i in range(as_list.length().getInfo()):
+                    latest = ee.Image(as_list.get(i)).clip(self.get_aoi())
+                    pm_latest = percent_missing(latest)
+                    if pm_latest < 0.01:
+                        best = latest
+                        pm_best = pm_latest
+                        break
+                    elif pm_latest < pm_best:
+                        best = latest
+                        pm_best = pm_latest
+                collected_imgs.append(best.clip(self.get_aoi()))
+                print('Selected an image for {}'
+                      .format(ee.Date(current_start_time).format('YYYY-MM-dd').getInfo()))
+
+            except:
+                print('There are no images in the',
+                      time_range, "starting on",
+                      ee.Date(current_start_time).format('YYYY-MM-dd').getInfo())
+                print('The best image had {:.2f}% pixels of data missing. \
+Try selecting a smaller area.'.format(pm_best*100))
+
+            current_start_time = current_end_time
+
+        return collected_imgs
+
+class CustomImage(Area):
+    def __init__(self, cloud_bucket, directory, assetname, geeusername):
+        if assetname.endswith('.tif'):
+            assetname = assetname[:-4]
+        
+        command = f'earthengine ls users/{geeusername}'
+        pop = subprocess.Popen(command, env=os.environ.copy(),
+                            shell=True, stdout=subprocess.PIPE)
+        if (geeusername + '/' + assetname) not in pop.stdout.read().decode():
+            self.eeImage = cloudtoeecommand(cloud_bucket, directory,
+                                            assetname, geeusername)
+        else:
+            self.eeImage = ee.Image(('users/' + geeusername + '/' + assetname))
+        
+        time.sleep(3)
+        
+        geoJSON = geoJSONer(self.eeImage.get('system:footprint').getInfo()['coordinates'])
+        super().__init__(geoJSON)
+    def get_image(self):
+        return self.eeImage
+    def latest_img(self):
+        return self.get_image()
+    def apply_filters(self):
+        return ee.ImageCollection(self.get_image())
+    def one_per(self):
+        return [self.get_image(),]
+       
 # yay
