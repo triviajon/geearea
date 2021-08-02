@@ -69,6 +69,15 @@ In [4]: larsen_all_images = larsen.apply_filters(start_date='2021-06-20', end_da
 In [5]: larsen.download(larsen_all_images, directory='export', scale=50)
 ```
 
+This package also includes support for custom image assets uploaded to Google Cloud. This requires the setup of a Google Code Editor Folder. This can just be done by going to https://code.earthengine.google.com/ and clicking on the "assets" tab. From there, just add a username and create the base folder. From there, just follow the same general steps to create the object:
+
+```
+In [6]: Rasters = CustomCollection('glaciers_ee', 'synthetic_rasters', 'jonfrosario')
+In [7]: Rasters_all = Rasters.apply_filters()
+In [8]: Rasters_filtered = Rasters.gammafilter(Rasters_all)
+```
+
+
 ## Cloud Project and Service Account Setup
 To create a Google Cloud Project: 
 https://developers.google.com/earth-engine/earthengine_cloud_project_setup#create-a-cloud-project
@@ -81,4 +90,5 @@ Finally, just add your `privatekey.json` file to the working directory where you
 ## Known Issues
 - The package is not modular
   - I was having build issues when the package was modular, so I decided to compile all of the src code into `area.py`. If you manage to build successfully and test the code in a modular format, please reach out.
+- Regular tiffs cause issues with Earth Engine causing them not to be downloadable
 
