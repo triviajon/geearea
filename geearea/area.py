@@ -51,6 +51,7 @@ def auth():
                 credentials = ee.ServiceAccountCredentials(service_account, json_file)
                 ee.Initialize(credentials=credentials)
                 client_obj = storage.Client(credentials=credentials)
+                break
             else:
                 raise KeyError("The JSON private key file could not be found \
 or was inconsistent with the service account. \
