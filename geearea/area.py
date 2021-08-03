@@ -36,23 +36,30 @@ def auth():
     """
     while True:
         try:
-            service_account = input("Enter your service account email: ")
+            for file in os.listdir():
+                if file == 'service_account.txt':
+                    service_account = open(file).read()
+                    break
+            if not os.path.exists('service_account.txt'):
+                    service_account = input("Enter your service account email: ")
             json_file = ''
             for file in os.listdir():
                 if file.endswith('.json'):
                     json_file = file
                     break
-            credentials = ee.ServiceAccountCredentials(service_account, json_file)
-            ee.Initialize(credentials=credentials)
-            client_obj = storage.Client(credentials=credentials)        
-            break
+            if service_account and json_file:    
+                credentials = ee.ServiceAccountCredentials(service_account, json_file)
+                ee.Initialize(credentials=credentials)
+                client_obj = storage.Client(credentials=credentials)
+            else:
+                raise KeyError("The JSON private key file could not be found \
+or was inconsistent with the service account. \
+Please place only one key in the current file directory.")
+                break
+
         except KeyboardInterrupt:
-            break
-        
-        except:
-            print("The JSON private key file could not be found or was inconsistent \
-    with the service account. Please only one key in the current file directory.")
-    
+            raise KeyboardInterrupt('Program stopped by user.')
+            
     return client_obj
 
 client = auth()
