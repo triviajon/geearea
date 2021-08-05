@@ -72,7 +72,7 @@ In [5]: larsen.download(larsen_all_images, directory='export', scale=50)
 This package also includes support for custom image assets uploaded to Google Cloud. This requires the setup of a Google Code Editor Folder. This can just be done by going to https://code.earthengine.google.com/ and clicking on the "assets" tab. From there, just add a username and create the base folder. From there, just follow the same general steps to create the object:
 
 ```
-In [6]: Rasters = CustomCollection('glaciers_ee', 'synthetic_rasters', 'jonfrosario')
+In [6]: Rasters = ga.CustomCollection('glaciers_ee', 'synthetic_rasters', 'jonfrosario')
 In [7]: Rasters_all = Rasters.apply_filters()
 In [8]: Rasters_filtered = Rasters.gammafilter(Rasters_all)
 ```
