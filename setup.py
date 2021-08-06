@@ -7,7 +7,7 @@ Created on Tue Jul 20 12:27:43 2021
 
 from setuptools import setup, find_packages
 
-VERSION = '0.0.7' 
+VERSION = '0.0.8' 
 DESCRIPTION = 'Managing GEE data easily'
 LONG_DESCRIPTION = 'A Python package for easily managing and downloading \
     Google Earth Engine data defined over geographical area. See https://github.com/triviajon/geearea \

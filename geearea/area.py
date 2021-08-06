@@ -16,7 +16,6 @@ from IPython.display import display
 import datetime as dt
 import pytz
 import matplotlib.pyplot as plt
-import urllib
 import numpy as np
 import folium
 import ee
@@ -26,7 +25,7 @@ def auth():
     """
     Authenticates the user to Google Earth Engine and initializes the library.
 
-    Args:
+    Parameters:
         None.
 
     Returns:
@@ -67,7 +66,11 @@ client = auth()
 
 # reducer
 def divider(coordinates):
-
+    """
+    (For internal use)
+    
+    Divides coordinates until the area is under 0.01 Lat_long area.
+    """
     assert np.array(coordinates).shape[1] == 2, "Coordinates of wrong size [error]"
     def checkifrect(nparray):
         pone, ptwo, pthree, pfour, pfive = nparray
@@ -97,6 +100,11 @@ def divider(coordinates):
     return new_polygons
 
 def rect_area(coordinates):
+    """
+    (For internal use)
+    
+    Calculates the area of a rectangle using Lat_long area.
+    """
     try:
         np.array(coordinates).shape[1] == 2
         p1, p2, p3, p4, p5 = coordinates
@@ -106,14 +114,6 @@ def rect_area(coordinates):
 
     area = np.abs(np.linalg.norm(p2-p1)*np.linalg.norm(p4-p1))
     return area
-
-def all_good(listOfCoords):
-    flag = True
-    for coords in listOfCoords:
-        if rect_area(coords) > 0.1: # arbitary value
-            flag = False
-            break
-    return flag
 
 def primer(area):
         l1 = [area,]
@@ -125,16 +125,22 @@ def reduce(listOfCoords):
     """
     Divides a rectangles defined by closed coordinates into smaller, rectangles.
 
-    Args:
+    Parameters:
         listOfCoords (list): A list of coordinates in the form \
-            [[[x1, y1], [x2, y2], ...., [x1, y1]], ...]. The \
+            [[[x1, y1], [x2, y2], ..., [x1, y1]], ...]. The \
             coordinates must define a rectangular shape.
     Returns:
         new_polygons (list): A set of new rectangular in the form \
             [coordinates1, coordinates2, ..., coordinatesn] where n is \
             the number number of length of coordinates-1 (the number of corners)
-
     """
+    def all_good(listOfCoords):
+        flag = True
+        for coords in listOfCoords:
+            if rect_area(coords) > 0.1: # arbitary value
+                flag = False
+                break
+        return flag
     try:
         listOfCoords[1]
     except:
@@ -253,43 +259,12 @@ def gammamap(image):
     return final
 
 # downlaod functions
-def DLimg(image, directory, scale, aoi):
-    """
-    Downloads an image or image collection.
-
-    Args:
-        images (ee.Image or ee.ImageCollection): images to download
-        directory (str): name of relative directory to save images to, \
-            leave as a blank string you'd like to save in current directory
-
-    Returns:
-        None.
-    """
-
-    imageID = image.id().getInfo()
-    def nextfile(imageID):
-        def filenamer(imageID, i):
-            name = imageID + '_' + str(i) + ".tif"
-            filename = os.path.join(os.getcwd(), directory, name)
-            return filename
-
-        i = 0
-        while os.path.isfile(filenamer(imageID, i)):
-            i += 1
-        return filenamer(imageID, i)
-
-    url = image.clip(aoi).getThumbURL({'format': 'geotiff', 'scale': scale})
-
-    filepath = nextfile(imageID)
-    urllib.request.urlretrieve(url, filepath)
-    print(url, "has been downloaded to", str(filepath))
-
 def merger(directory='export'):
     """
     Run this function after the download is complete to have gdal attempt \
         to merge the geoTIFFs. Generally should not used on it's own.
 
-    Args:
+    Parameters:
         directory (str): The directory to find the unmerged TIF images in. Defaults to 'export'
 
     Returns:
@@ -313,18 +288,29 @@ def merger(directory='export'):
         assert True, "gdal_merge was not found, \
 try restarting the kernel and running merger(directory)"
 
-def batchExport(images, scale, coords, cloud_bucket='', directory='', tryReduce=False):
+def batchExport(images, scale, coords, cloud_bucket='', 
+                directory='', to_disk=True, tryReduce=False):
     """
     Creates a number of ee.batch tasks equal to the number of ee.Image objects in images. \
         The images are downloaded to the Google Cloud Platform Storage glaciers_ee \
-        bin in the subdirectory set.
+        bin in the subdirectory set, and also to the disk if to_disk is True.
 
-    Args:
+    Parameters:
         images (list): a list of images to export to cloudstorage
+        
         scale (int): the scale in meters/pixel to download the images at
+        
+        cloud_bucket (str): The cloud bucket to temporarily upload the images to
+        
         directory (str): the subdirectory to download the images to in the \
             glaciers_ee bin. Defaults to 'export'
 
+        to_disk (bool): If set to True, the images will proceed to download to \
+            disk. Defaults to True
+        
+        tryReduce (bool): If set to True, if the images fail for any reason, \
+            the reduction algorithm will attempt to split the image into smaller segments
+            
     Returns:
         None.
     """
@@ -354,9 +340,9 @@ def batchExport(images, scale, coords, cloud_bucket='', directory='', tryReduce=
     def time_for_completion(active_ind, scale, rate=1.5):
         num_imgs = active_ind.count(True)
         try:
-            time_left = (num_imgs * rect_area(coords)/scale * 1/rate * 3600)**(3/4) # hours
+            time_left = (num_imgs * rect_area(coords)/scale * 1/rate)**(3/4) # hours
         except:
-            time_left = 0
+            time_left = (num_imgs * 1/scale * 1/rate)
             
         if time_left < 1/60:
             time_left *= 3600
@@ -379,7 +365,11 @@ def batchExport(images, scale, coords, cloud_bucket='', directory='', tryReduce=
         n = 0
         for coords in image_segmented.tolist():
             name = failed_image.get('system:index').getInfo()
-            name_n = name + '_' + str(n)
+            try: 
+                name + ''
+            except:
+                name = failed_image.get('system:id').getInfo().replace("/", "")
+                name_n = name + '_' + str(n)
             new_aoi = ee.Geometry.Polygon([coords])
             task = ee.batch.Export.image.toCloudStorage(**{
                 'image': failed_image,
@@ -478,19 +468,23 @@ def batchExport(images, scale, coords, cloud_bucket='', directory='', tryReduce=
             except FileNotFoundError:
                 print('ERROR: Directory does not exist on disk!',
                       'Please create it first.')
-            
-    new = get_new(start_time)
-    download_list_of_blobs(new)
+        
+    if to_disk:
+        new = get_new(start_time)
+        download_list_of_blobs(new)
 
 def cloudtoeecommand(cloud_bucket, directory, assetname, geeusername):
     """
     Returns an ee.Image from a cloud storage asset. Requirement:
         must have a username and main folder with Google code editor
     
-    Args: 
+    Parameters: 
         cloud_bucket (str): string describing the name of the cloud bucket
+        
         directory (str): directory describing the directory where the file is stored
+        
         assetname (str): the filename of the asset (without .tif)
+        
         geeusername (str): your username to store the asset in the code editor
         
     Returns:
@@ -553,18 +547,20 @@ def cloudtoeecommand(cloud_bucket, directory, assetname, geeusername):
     return eeimage
 
 def multicloudtoee(cloud_bucket, directory, geeusername):
-    '''
+    """
     Creates callable image assets from all the Tiffs in a Cloud Directory. \
         Requirement: must have a username and main folder with Google code editor
     
-    Args: 
+    Parameters: 
         cloud_bucket (str): string describing the name of the cloud bucket
+        
         directory (str): directory describing all the images you'd like to upload
+        
         geeusername (str): your username to store the asset in the code editor
         
     Returns:
         None
-    '''
+    """
     bucket = client.get_bucket(cloud_bucket)
     blobs = client.list_blobs(bucket)
     
@@ -601,7 +597,7 @@ def multicloudtoee(cloud_bucket, directory, geeusername):
                 break
             else:
                 time.sleep(10)
-                print(f'Alive count: {alive_count}')
+                print('Max allowed threads reached. Waiting for threads to free.')
             
         t = threading.Thread(target=do_convert)
         t.daemon = True
@@ -615,66 +611,12 @@ def multicloudtoee(cloud_bucket, directory, geeusername):
 
     return image_objs_list
 
-    '''
-    Creates callable image assets from all the Tiffs in a Cloud Directory. \
-        Requirement: must have a username and main folder with Google code editor
-    
-    Args: 
-        cloud_bucket (str): string describing the name of the cloud bucket
-        directory (str): directory describing all the images you'd like to upload
-        geeusername (str): your username to store the asset in the code editor
-        
-    Returns:
-        None
-    '''
-    bucket = client.get_bucket(cloud_bucket)
-    blobs = client.list_blobs(bucket)
-    
-    threads = []
-    
-    for blob in blobs:
-        
-        ind = str(blob).find('/')
-        find = ' ' + directory
-        if str(blob)[ind-1:ind-len(find)-1:-1] != find[::-1]: 
-            # if directory doesn't match, continue to next iter
-            continue
-        
-        if str(blob)[ind:str(blob).find(',', ind)].strip() == '/':
-            # if blob is the actual directory and not a file, continue
-             continue
-        
-        blob_info = str(blob).split(' ')
-        
-        def do_convert():
-            assetname = blob_info[2][blob_info[2].find('/')+1:-1]
-            cloudtoeecommand(cloud_bucket, directory, assetname, geeusername)
-        
-        while True:
-            alive_count = 0
-            for thread in threads:
-                if thread.is_alive(): alive_count += 1 
-            if alive_count < 10:
-                break
-            else:
-                time.sleep(10)
-                print(f'Alive count: {alive_count}')
-            
-        t = threading.Thread(target=do_convert)
-        t.daemon = True
-        threads.append(t)
-        t.start()
-
-    for i in range(len(threads)):
-        threads[i].join()
-
-    return None
 # folium maps
 def add_ee_layer(self, ee_image_object, vis_params, name):
     """
     Adds an ee.Image layer to a folium map
 
-    Args:
+    Parameters:
         ee_image_object (ee.Image): An image to place on folium map
         vis_params (dict): Visual parameters to display the image. See GEE "Image Visualization"
         name (str): Name of layer on folium map
@@ -699,7 +641,7 @@ def eeICtolist(imageCollection):
     """
     Converts an ee.ImageCollection to a python list of ee.Image objects.
 
-    Args:
+    Parameters:
         imageCollection (ee.ImageCollection): the collection to be converted to a list
 
     Returns:
@@ -718,7 +660,7 @@ def dispHist(hists):
     """
     Plots 1 histogram for each histogram passed into it.
 
-    Args:
+    Parameters:
         hists (list): Can either be a histogram from Area.hist() or \
             a list of histograms [Area.hist(img1), Area.hist(img2)]
 
@@ -748,7 +690,7 @@ def get_dates(images):
     """
     Returns the dates of each image in imageCllection
 
-    Args:
+    Parameters:
         images (ee.Image or ee.ImageCollection): Image/images to get the date of
 
     Returns:
@@ -780,9 +722,27 @@ class Area:
         it contains methods for displaying, operating on, and downloading
         ee.Images and ee.ImageCollections.
 
-    Args:
+    Parameters"
+"--------
         geoJSON (dict):  The geoJSON defining a singular geographical area. \
             See https://geojson.io/.
+            
+    Methods:
+        - get_coords()
+        - get_aoi()
+        - apply_filters()
+        - one_per()
+        - latest_img()
+        - append_elevation_info()
+        - normalize_all_bands()
+        - segment()
+        - gammafilter()
+        - disp()
+        - download()
+        - hist() 
+        - get_stats()
+        - get_CM_stats()
+        - pypeline()
 
     """
     def __init__(self, geoJSON):
@@ -794,7 +754,8 @@ class Area:
         """
         Gets the coordinates defined by the geoJSON.
 
-        Args:
+        Parameters"
+"--------
             None.
 
         Returns:
@@ -807,7 +768,8 @@ class Area:
         """
         Gets the AOI defined by the coordinates.
 
-        Args:
+        Parameters"
+"--------
             None.
 
         Returns:
@@ -823,17 +785,24 @@ class Area:
         """
         Applies filters to grab an image collecton.
 
-        Args:
+        Parameters:
             collection (str): Which collection to grab images from
+            
             start_date (ee.Date): Start date of filtering
+            
             end_date (ee.Date): End date of filtering
+            
             tRP1 (str): Band to filter for. Defaults to None for None for any bands
+            
             tRP2 (str): Secondary band to filter for. Defaults for None for any bands
+            
             res (str): L, M, or H. Resolution to filter for. Defaults to None (any resolution)
+            
             ins (str): The instrumental mode to filter for. Defaults to None (any mode)
+            
             earliest_first (bool): If set to True, the ee.ImageCollection returned \
                 will be sorted s.t. the first ee.Image will be the captured the \
-                    earliest. Defaults to False for latest image first.
+                earliest. Defaults to False for latest image first.
 
         Returns:
             sort (ee.ImageCollection): An image collection with the area of geoJSON
@@ -870,17 +839,24 @@ class Area:
         """
         Applies filters to create a LIST with one ee.Image per time_range.
 
-        Args:
+        Parameters:
             time_range (str): day, month, or year. Specifies the approximate \
                 time range between photos.
+                
             collection (str): Which collection to grab images from
+            
             start_date (ee.Date): Start date of filtering
+            
             end_date (ee.Date): End date of filtering
-            tRP1 (str): Band to filter for. Defaults to None for None for any bands
+            
+            tRP1 (str): Band to filter for. Defaults to None for none for any bands
+            
             tRP2 (str): Secondary band to filter for. Defaults for None for any bands
+            
             res (str): L, M, or H. Resolution to filter for. Defaults to None \
                 for any resolution
-            ins (str): The instrumental mode to filter for. Defaults to None \
+                
+            ins (str): The instrumental mode to filter for (IW/EW). Defaults to None \
                 for any instrument mode
 
         Returns:
@@ -891,7 +867,7 @@ class Area:
             """
             Helper function that returns the % of the image data missing in the first band.
 
-            Args:
+            Parameters:
                 image (ee.Image): The image to calculate the % missing of
 
             Returns:
@@ -959,7 +935,7 @@ Try selecting a smaller area.'.format(pm_best*100))
         """
         Grabs the latest image in the given collection.
 
-        Args:
+        Parameters:
             collection (str): A collection name from GEE's public collections data. \
                 Defaults to S1_GRD_FLOAT
 
@@ -971,7 +947,7 @@ Try selecting a smaller area.'.format(pm_best*100))
                 """
                 Helper function that returns the % of the image data missing in the first band.
             
-                Args:
+                Parameters:
                     image (ee.Image): The image to calculate the % missing of
             
                 Returns:
@@ -1003,13 +979,13 @@ Try selecting a smaller area.'.format(pm_best*100))
     def append_elevation_info(self, image):
         """
         Adds the elevation information to each image passed into it. \
-            The image argument must be an ee.Image.
-            Warning: this method takes from the mosaic data, so it does not
-            vary with time. 
+            The image argument must be an ee.Image. Warning: this method \
+            takes from the mosaic data, so it does not vary with time. 
 
-        Args:
-            images (ee.Image): Image to add the elevation information.
-            Since this is a class function, these are covering the same geographical area.
+        Parameters:
+            images (ee.Image): Image to add the elevation information. Since \
+                this is a class function, these are covering the same geographical
+                area.
 
         Returns:
             multi (ee.Image): Image with added elevation as a new band
@@ -1030,11 +1006,12 @@ Try selecting a smaller area.'.format(pm_best*100))
         Noramlizes each of the bands in an image to range in values \
             between 0 and 1.
 
-        Args:
+        Parameters:
             image (ee.Image): Image to normalize
 
         Returns:
             image_norm (ee.Image): A new image, with normalized float values
+            
             dicts (list): A list of ee.Dictionary containing the min and max \
                 of each band.
         """
@@ -1057,36 +1034,55 @@ Try selecting a smaller area.'.format(pm_best*100))
 
         return image_norm, dicts
     
-    def segment(self, image, compactness=100, gammafilter=True):
+    def segment(self, image, compactness=0, gammafilter=True):
         """
         (Warning: removes the angle band)
         
         Segments an image or images using the Google Earth Engine Algorithm \
             SNIC algorithm
         
-        Args:
+        Parameters:
             images (ee.Image, ee.ImageCollection, list): Image/images to segment
+            
             compactness (int): Number representing the approximate size of clusters
+            
             gammafilter (bool): If enabled, will filter the images before segmentation
             
         Returns:
-            segmented (same as images): The image/images with added bands for
-            clusters/seeds, and the original bands adjusted to represent the 
-            mean in each cluster
+            segmented (same as images): The image/images with these bands:
+                - clusters (unique ID/cluster)
+                - radar_data_mean (per cluster, of the original image's first non-angle band)
+                - original first non-angle band
         """
         assert isinstance(image, (
             ee.Image, ee.ImageCollection, list)
             ), "Image must be either ee.Image, ee.ImageCollection, or list of ee.Images"
         
-        system_index = image.get('system:index').getInfo() + '_segmentation'
+        print('Starting segmentation...')
         
         if gammafilter:
             image = self.gammafilter(image)
         
         def map_segment(image):
-            return ee.Algorithms.Image.Segmentation.SNIC(
+            image = ee.Image(image)
+            coordinates = image.get('system:footprint').getInfo()['coordinates']
+            try:
+                system_index = image.get('system:id').getInfo().replace("/", "") + '_segmentation'
+            except:
+                system_index = image.get('system:index').getInfo().replace("/", "") + '_segmentation'
+            SNIC = ee.Algorithms.Image.Segmentation.SNIC(
                 image, **{'compactness': compactness,
-                          'connectivity': 8}).set('system:index', system_index)
+                          'connectivity': 8})
+            SNIC_bands_removed = SNIC.select([band for band in SNIC.bandNames().getInfo()
+                                                 if band != 'angle_mean' and band != 'angle'
+                                                 and band != 'labels' and band != 'seeds'])
+            SNIC_bands_removed = ee.Image([SNIC_bands_removed, image])
+            
+            if not SNIC_bands_removed.get('Int32').getInfo():
+                SNIC_bands_removed = SNIC_bands_removed.multiply(255).toInt32().set('Int32', True)
+            
+            return SNIC_bands_removed.set('system:index', system_index).set('system:footprint', coordinates)
+        
         def remove_angle(image):
             bands_angle_removed = image.bandNames().filter(
                 ee.Filter.neq('item', 'angle'))
@@ -1097,24 +1093,29 @@ Try selecting a smaller area.'.format(pm_best*100))
             segmented = map_segment(image)
         elif isinstance(image, ee.ImageCollection):
             image = self.gammafilter(image)
-            segmented = image.map(map_segment)
+            image = eeICtolist(image)
+            segmented = list(map(map_segment, image))
         elif isinstance(image, list):
             image = self.gammafilter(image)
             segmented = list(map(map_segment, image))
+            
+        print('Segmentation done')
+            
         return segmented
         
 
     def gammafilter(self, image):
         """
-        Applies a gamma maximum filter to an image/images. As implemented as in
-        Sentinel-1 SAR Backscatter Analysis Ready Data Preparation in Google Earth Engine
+        Applies a gamma maximum filter to an image/images. As implemented as in \
+            Sentinel-1 SAR Backscatter Analysis Ready Data Preparation in 
+            Google Earth Engine.
 
-        Args:
-            image (ee.Image or ee.ImageCollection): The image/images to be filtered for speckle
+        Parameters:
+            image (ee.Image or ee.ImageCollection): The image/images to be \
+                filtered for speckle
 
         Returns:
             filtered (ee.Image): The filtered image/images
-
         """
         assert isinstance(image, (
             ee.Image, ee.ImageCollection, list)
@@ -1132,10 +1133,13 @@ Try selecting a smaller area.'.format(pm_best*100))
         """
         Displays an image in rgb/grayscale folium map fashion
 
-        Args:
+        Parameters:
             image (ee.Image): The image to display
+            
             rgb (bool): Whether or not to display in rgb corresponding to
-            band (int): Selects which band to display if rgb is set to False. Defaults to 0
+            
+            band (int): Selects which band to display if rgb is set to False. \
+                Defaults to 0.
 
         Returns:
             None.
@@ -1164,7 +1168,7 @@ Try selecting a smaller area.'.format(pm_best*100))
             fmap.add_child(folium.LayerControl())
             display(fmap)
 
-    def download(self, image, scale, cloud_bucket, directory, tryReduce=False):
+    def download(self, image, scale, cloud_bucket, directory, to_disk=True, tryReduce=False):
         """
         Downloads either an image or an image collection to a directory.
         (note: I couldn't get geemap to download singular images, but
@@ -1173,12 +1177,22 @@ Try selecting a smaller area.'.format(pm_best*100))
         python lists of images or ee.ImageCollection will be saved to
         the glaciers_ee bucket in Google Cloud Platform)
 
-        Args:
-            images (ee.Image or ee.ImageCollection or list): image/images to download
-            directory (str): name of relative directory to save images to,
-            leave as a blank string you'd like to save in current directory
-            scale (float): The scale to download at in meters/pixel.
-
+        Parameters:
+            images (list): a list of images to export to cloudstorage
+            
+            scale (int): the scale in meters/pixel to download the images at
+            
+            cloud_bucket (str): The cloud bucket to temporarily upload the images to
+            
+            directory (str): the subdirectory to download the images to in the \
+                glaciers_ee bin. Defaults to 'export'
+    
+            to_disk (bool): If set to True, the images will proceed to download to \
+                disk. Defaults to True
+            
+            tryReduce (bool): If set to True, if the images fail for any reason, \
+                the reduction algorithm will attempt to split the image into smaller segments
+                
         Returns:
             None.
         """
@@ -1212,8 +1226,9 @@ Try selecting a smaller area.'.format(pm_best*100))
         """
         Creates the values for an intensity histogram of an image.
 
-        Args:
+        Parameters:
             image (ee.Image): The image to calculate the histogram for
+            
             band (int): The band to calculate the pixel intensities for
 
         Returns:
@@ -1237,10 +1252,12 @@ Try selecting a smaller area.'.format(pm_best*100))
 
     def get_stats(self, image, band=0):
         """
-        Grabs common statistics about and image's specified band including mean, variance, and skew.
+        Grabs common statistics about and image's specified band including \
+            mean, variance, and skew.
 
-        Args:
+        Parameters:
             image (ee.Image): The image to grab stats about
+            
             band (int): The band to make calculations about of the image
 
         Return:
@@ -1249,26 +1266,145 @@ Try selecting a smaller area.'.format(pm_best*100))
         assert isinstance(image, ee.Image), "Image must be a singular ee.Image object"
         bands = image.bandNames().getInfo()
 
-        stats = {}
-        stats['mean'] = image.select(bands[band]).reduceRegion(ee.Reducer.mean(),
-                          self.get_aoi()).get(bands[band]).getInfo()
-        stats['variance'] = image.select(bands[band]).reduceRegion(ee.Reducer.variance(),
-                          self.get_aoi()).get(bands[band]).getInfo()
-        stats['skew'] = image.select(bands[band]).reduceRegion(ee.Reducer.skew(),
-                          self.get_aoi()).get(bands[band]).getInfo()
+        if isinstance(band, int):
+            stats = {}
+            stats['mean'] = image.select(bands[band]).reduceRegion(ee.Reducer.mean(),
+                              self.get_aoi()).get(bands[band]).getInfo()
+            stats['variance'] = image.select(bands[band]).reduceRegion(ee.Reducer.variance(),
+                              self.get_aoi()).get(bands[band]).getInfo()
+            stats['skew'] = image.select(bands[band]).reduceRegion(ee.Reducer.skew(),
+                              self.get_aoi()).get(bands[band]).getInfo()
+        elif isinstance(band, str):
+            stats = {}
+            stats['mean'] = image.select(band).reduceRegion(ee.Reducer.mean(),
+                              self.get_aoi()).get(band).getInfo()
+            stats['variance'] = image.select(band).reduceRegion(ee.Reducer.variance(),
+                              self.get_aoi()).get(band).getInfo()
+            stats['skew'] = image.select(band).reduceRegion(ee.Reducer.skew(),
+                              self.get_aoi()).get(band).getInfo()
         return stats
     
+    def get_CM_stats(self, image, band=0, bands_to_store=['contrast', 'corr', 'diss', 'ent', 'asm', 'idm', 'prom']):
+        """
+        Grabs averaged statistics derivable from the co-occurrence matrix of 
+        an image band. List of statistics returned:
+            - contrast (con)
+            - correlation (cor)
+            - dissimilarity (dis)
+            - entropy (ent)
+            - uniformity (uni) same as angular second moment (asm)
+            - inverse difference moment (idm)
+        
+        Parameters:
+            image (ee.Image, ee.ImageCollection, or list): image/images to use
+            
+            band (int or str): band to calculate CM stats on
+            
+            bands_to_store (list): default list of texture data to return. can be
+            modified to limit return data
+            
+        Returns:
+            CM_stats (same type as image): image/images with bands as listed above
+        """
+        print('Starting CM_stats ...')
+        
+        bands_to_store = ['contrast', 'corr', 'diss', 'ent', 'asm', 'idm', 'prom']
+        
+        def CM(image):
+            system_index = image.get('system:index').getInfo().replace('/', '') + '_CM_stats'
+            
+            if isinstance(band, int):
+                bands = image.bandNames().getInfo()
+                b = bands[band]
+                
+            image_band = image.select(b)
+            
+            if not image_band.get('Int32').getInfo():
+                image_band = image_band.multiply(255).toInt32().set('Int32', True)
+        
+            for i, band_n in enumerate(bands_to_store):
+                bands_to_store[i] = b + '_' + band_n
+    
+            GCM = image_band.glcmTexture()
+            CM_stats = GCM.select(bands_to_store).set('system_index', system_index)
+            
+            nonlocal curr
+            print(f"{curr}/{m} complete")
+            curr += 1
+            
+            return CM_stats
+        
+        if isinstance(image, ee.Image):
+            curr, m = (0, 1)
+            CM_stats = CM(image)
+        elif isinstance(image, ee.ImageCollection):
+            image = eeICtolist(image)
+            curr, m = (0, len(image))
+            CM_stats = [CM(img) for img in image]
+        elif isinstance(image, list):
+            curr, m = (0, len(image))
+            CM_stats = [CM(img) for img in image]
+        else:
+            raise TypeError("image arg is not of ee.Image, ee.ImageCollection, or list type")
+        return CM_stats
+        
+    
+    def pypeline(self, start_date, end_date, cloud_bucket, 
+                 directory, collection='COPERNICUS/S1_GRD_FLOAT', scale=50):
+        """
+        This pipeline is a single command that will collect one image from every
+        month between start_date and end_date and download. The inbetween work is 
+        done for the user. For more flexibility, consider manually collecting images.
+        Each image has these bands: segmentation results, band_means
+        
+        Parameters:
+            start_date (ee.Date, str): Start date of filtering in ISO format
+            
+            end_date (ee.Date, str): End date of filtering in ISO format
+            
+        Returns:
+            None
+        """
+        one_per_images = self.one_per('month', collection, start_date=start_date,
+                                      end_date=end_date)
+        
+        segmented_and_filtered = self.segment(one_per_images)
+        
+        # get texture info 
+        
+        self.download(segmented_and_filtered, scale=scale, cloud_bucket=cloud_bucket,
+                      directory=directory)
+        
+        
 class CustomCollection(Area):
     """
     This is a subclass of the main class. Use it on importing images from \
         Google Cloud Storage. Standard operations can be applied like 
         gammafilter and segmentation.
 
-    Args: 
+    Parameters: 
         cloud_bucket (str): string describing the name of the cloud bucket
+        
         directory (str): directory describing the directory where the files are stored
+        
         geeusername (str): your username to store the asset in the code editor
 
+    Methods:
+        - get_coords()
+        - get_aoi()
+        - apply_filters()
+        - one_per()
+        - latest_img()
+        - append_elevation_info()
+        - normalize_all_bands()
+        - segment()
+        - gammafilter()
+        - disp()
+        - download()
+        - hist() 
+        - get_stats()
+        - get_CM_stats()
+        - pypeline()
     """
     def __init__(self, cloud_bucket, directory, geeusername):
         bucket = client.get_bucket(cloud_bucket)
@@ -1324,7 +1460,7 @@ class CustomCollection(Area):
         """
         Gets the coordinates defined by the geoJSON.
 
-        Args:
+        Parameters:
             None.
 
         Returns:
@@ -1338,7 +1474,7 @@ class CustomCollection(Area):
         """
         Gets the AOI defined by the coordinates.
 
-        Args:
+        Parameters:
             None.
 
         Returns:
@@ -1351,7 +1487,7 @@ class CustomCollection(Area):
         """
         Grabs the latest image in the given collection.
 
-        Args:
+        Parameters:
             collection (str): A collection name from GEE's public collections data. \
                 Defaults to S1_GRD_FLOAT
 
@@ -1383,11 +1519,13 @@ class CustomCollection(Area):
         """
         Applies filters to create a LIST with one ee.Image per time_range.
 
-        Args:
+        Parameters:
             time_range (str): day, month, or year. Specifies the approximate \
                 time range between photos.
-            start_date (ee.Date): Start date of filtering
-            end_date (ee.Date): End date of filtering
+                
+            start_date (ee.Date, str): Start date of filtering in ISO format
+            
+            end_date (ee.Date, str): End date of filtering in ISO format
 
         Returns:
             collected_imgs (ee.ImageCollection): An image collection with the area
@@ -1397,7 +1535,7 @@ class CustomCollection(Area):
             """
             Helper function that returns the % of the image data missing in the first band.
 
-            Args:
+            Parameters:
                 image (ee.Image): The image to calculate the % missing of
 
             Returns:
@@ -1447,7 +1585,8 @@ class CustomCollection(Area):
                 collected_imgs.append(best.clip(self.get_aoi()))
                 print('Selected an image for {}'
                       .format(ee.Date(current_start_time).format('YYYY-MM-dd').getInfo()))
-
+            except KeyboardInterrupt:
+                print('Canceled')
             except:
                 print('There are no images in the',
                       time_range, "starting on",
@@ -1460,6 +1599,36 @@ Try selecting a smaller area.'.format(pm_best*100))
         return collected_imgs
 
 class CustomImage(Area):
+    """
+    This is a subclass of the main class. Use it on importing a singular image from \
+        Google Cloud Storage. Standard operations can be applied like \
+        gammafilter and segmentation.
+
+    Parameters: 
+        cloud_bucket (str): string describing the name of the cloud bucket
+        
+        directory (str): directory describing the directory where the files are stored
+        
+        geeusername (str): your username to store the asset in the code editor
+
+    Methods:
+        - get_coords()
+        - get_aoi()
+        - get_image()
+        - apply_filters()
+        - one_per()
+        - latest_img()
+        - append_elevation_info()
+        - normalize_all_bands()
+        - segment()
+        - gammafilter()
+        - disp()
+        - download()
+        - hist() 
+        - get_stats()
+        - get_CM_stats()
+        - pypeline()
+    """
     def __init__(self, cloud_bucket, directory, assetname, geeusername):
         if assetname.endswith('.tif'):
             assetname = assetname[:-4]
