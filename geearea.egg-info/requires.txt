@@ -1,4 +1,0 @@
-folium
-earthengine-api
-matplotlib
-numpy
