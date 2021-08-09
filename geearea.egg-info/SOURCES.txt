@@ -1,9 +1,0 @@
-README.md
-setup.py
-geearea/__init__.py
-geearea/area.py
-geearea.egg-info/PKG-INFO
-geearea.egg-info/SOURCES.txt
-geearea.egg-info/dependency_links.txt
-geearea.egg-info/requires.txt
-geearea.egg-info/top_level.txt
