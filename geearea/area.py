@@ -186,7 +186,144 @@ def degeoJSONer(geoJSON):
     coords = geoJSON['features'][0]['geometry']['coordinates']
     return coords
 
-# gammamap
+# filters
+
+def lowpass1(image):
+    try:
+        system_index = image.get('system:index').getInfo()
+        system_index + ''
+    except:
+        system_index = image.get('system:id').getInfo()
+    
+    try:
+        bandNames = image.bandNames().remove('angle')
+    except:
+        bandNames = image.bandNames()
+
+    image = image.select(bandNames)
+    
+    system_index = system_index.replace('/', '__')
+    row = [1/9, 1/9, 1/9]
+    kernel = ee.Kernel.fixed(width=3, height=3, weights=[row, row, row])
+    
+    n_image = image.convolve(kernel)
+    return n_image.set('system:index', system_index)
+
+def lowpass2(image):
+    try:
+        system_index = image.get('system:index').getInfo()
+        system_index + ''
+    except:
+        system_index = image.get('system:id').getInfo()
+
+    try:
+        bandNames = image.bandNames().remove('angle')
+    except:
+        bandNames = image.bandNames()
+
+    image = image.select(bandNames)
+    
+    system_index = system_index.replace('/', '__')
+    rowA = [0, 1/8, 0]
+    rowB = [1/8, 1/2, 1/8]
+    kernel = ee.Kernel.fixed(width=3, height=3, weights=[rowA, rowB, rowA])
+    
+    n_image = image.convolve(kernel)
+    return n_image.set('system:index', system_index)
+
+def highpass1(image):
+    try:
+        system_index = image.get('system:index').getInfo()
+        system_index + ''
+    except:
+        system_index = image.get('system:id').getInfo()
+
+    try:
+        bandNames = image.bandNames().remove('angle')
+    except:
+        bandNames = image.bandNames()
+
+    image = image.select(bandNames)
+    
+    system_index = system_index.replace('/', '__')
+    rowA = [-1/8, 1/8, 1/8]
+    rowB = [1/8, 0, 1/8]
+    
+    kernel = ee.Kernel.fixed(width=3, height=3, weights=[rowA, rowB, rowA])
+    n_image = image.convolve(kernel)
+    return n_image.set('system:index', system_index)
+
+def highpass2(image):
+    try:
+        system_index = image.get('system:index').getInfo()
+        system_index + ''
+    except:
+        system_index = image.get('system:id').getInfo()
+
+    try:
+        bandNames = image.bandNames().remove('angle')
+    except:
+        bandNames = image.bandNames()
+
+    image = image.select(bandNames)
+    
+    system_index = system_index.replace('/', '__')
+    rowA = [0, -1/4, 0]
+    rowB = [-1/4, 1, -1/4]
+    
+    kernel = ee.Kernel.fixed(width=3, height=3, weights=[rowA, rowB, rowA])
+    n_image = image.convolve(kernel)
+    return n_image.set('system:index', system_index)
+
+def frost(image):
+    try:
+        system_index = image.get('system:index').getInfo()
+        system_index + ''
+    except:
+        system_index = image.get('system:id').getInfo()
+    
+    system_index = system_index.replace('/', '__')
+    
+    try:
+        bandNames = image.bandNames().remove('angle')
+    except:
+        bandNames = image.bandNames()
+
+    image = image.select(bandNames)
+
+    nfrost = 7 # kernel size
+    D = 2 # frost damping factor
+    
+    kernel = np.zeros((nfrost, nfrost))
+    
+    center = (nfrost-1)/2
+    
+    for i in range(nfrost):
+        for j in range(nfrost):
+            kernel[i, j] = ((center-i)**2 + (center-j)**2)**(1/2)
+            
+    distArr = ee.Array(kernel.tolist())
+    distArrImg = ee.Image(distArr)
+    
+    weights = ee.List.repeat(ee.List.repeat(1,nfrost),nfrost)
+    kernel = ee.Kernel.fixed(nfrost,nfrost, weights, 1, 1)
+    
+    mean = image.select(bandNames).reduceNeighborhood(ee.Reducer.mean(), kernel);
+    var = image.select(bandNames).reduceNeighborhood(ee.Reducer.variance(), kernel);
+    
+    B = var.divide(mean.multiply(mean)).multiply(D)
+    eNegB = B.multiply(-1).exp()
+    Bneighbor = eNegB.neighborhoodToArray(kernel)
+    
+    W = Bneighbor.pow(distArrImg)
+    WSum = W.arrayReduce(ee.Reducer.sum(), [0,1]).arrayFlatten([['coefficientx'], ['coeffecienty']])
+    
+    imageNeighbor = image.select(bandNames).neighborhoodToArray(kernel)    
+    imageNeighborW = imageNeighbor.multiply(W)
+    
+    n_image = imageNeighborW.arrayReduce(ee.Reducer.sum(), [0, 1]).arrayFlatten([['frostx'], ['frosty']]).divide(WSum)
+    return n_image.rename(bandNames).set('system:index', system_index)
+
 def gammamap(image):
 
     """
@@ -204,8 +341,9 @@ def gammamap(image):
     ee.Image
         Filtered Image
     """
+    
     enl = 5
-    KERNEL_SIZE=3
+    KERNEL_SIZE=5
     try:
         bandNames = image.bandNames().remove('angle')
     except:
@@ -255,8 +393,7 @@ def gammamap(image):
     #Merge
     output = ee.ImageCollection([zHat,rHat,x]).sum()
     redone = image.addBands(output, None, True)
-    final = redone.toFloat()
-    return final
+    return redone
 
 # downlaod functions
 def merger(directory='export'):
@@ -314,17 +451,18 @@ def batchExport(images, scale, coords, cloud_bucket='',
     Returns:
         None.
     """
+
     images_sort = images[:]
     def start_tasks(images, scale, cloud_bucket, directory):
         for img in images:
-            name = img.get('system:index').getInfo()
-            try: 
-                name + ''
+            try:
+                system_index = img.get('system:index').getInfo()
+                system_index + ''
             except:
-                name = img.get('system:id').getInfo().replace("/", "")
+                system_index = img.get('system:id').getInfo()
             task = ee.batch.Export.image.toCloudStorage(**{
                 'image': img,
-                'fileNamePrefix': directory + '/' + name,
+                'fileNamePrefix': directory + '/' + system_index,
                 'region': ee.Geometry.Polygon(coords),
                 'scale': scale,
                 'crs': 'EPSG:3031',
@@ -332,7 +470,7 @@ def batchExport(images, scale, coords, cloud_bucket='',
                 'fileFormat': 'GeoTIFF',
                 'maxPixels': 10e12
             })
-            print(name, "is being uploaded.")
+            print(system_index, "is being uploaded.")
             task.start()
             tasks.append(task)
             active_ind.append(task.active())
@@ -734,9 +872,9 @@ class Area:
         - one_per()
         - latest_img()
         - append_elevation_info()
-        - normalize_all_bands()
+        - normalize_band()
         - segment()
-        - gammafilter()
+        - mapfilter()
         - disp()
         - download()
         - hist() 
@@ -830,6 +968,7 @@ class Area:
             img_set = img_set.filter(ee.Filter.eq('resolution', res))
 
         sort = img_set.sort('system:time_start', opt_ascending=earliest_first)
+        print(f'This image collection has {sort.size().getInfo()} images.')
         return sort
 
     def one_per(self, time_range, collection='COPERNICUS/S1_GRD_FLOAT',
@@ -924,8 +1063,6 @@ class Area:
                 print('There are no images in the',
                       time_range, "starting on",
                       ee.Date(current_start_time).format('YYYY-MM-dd').getInfo())
-                print('The best image had {:.2f}% pixels of data missing. \
-Try selecting a smaller area.'.format(pm_best*100))
 
             current_start_time = current_end_time
 
@@ -1001,40 +1138,78 @@ Try selecting a smaller area.'.format(pm_best*100))
         
         return multi
 
-    def normalize_all_bands(self, image):
+    def normalize_band(self, image, band=0):
         """
-        Noramlizes each of the bands in an image to range in values \
-            between 0 and 1.
-
+        Normalizes the band of a given image/images. 
+        
         Parameters:
-            image (ee.Image): Image to normalize
-
+            image (ee.Image, ee.ImageCollection, list): An image or images \
+                to normalize
+            band (int, str): The band of the image to normalize. Either the \
+                named band or an int representing which band to normalize
+                
         Returns:
-            image_norm (ee.Image): A new image, with normalized float values
-            
-            dicts (list): A list of ee.Dictionary containing the min and max \
-                of each band.
+            normalized (ee.Image, list): An image or images with the normalize \
+                band as the new first band. The other bands are untouched
         """
-        assert isinstance(image, ee.Image), "Image must be a singular ee.Image object"
-
-        aoi = self.get_aoi()
-        bands = image.bandNames().getInfo()
-        img_bands = []
-        dicts = []
-        for band in bands:
-            min_max_dict = image.select(band).reduceRegion(ee.Reducer.minMax(), aoi,
-                                                crs='EPSG:3031', scale=1000)
-
-            mini = ee.Number(min_max_dict.get('{}_min'.format(band)))
-            maxi = ee.Number(min_max_dict.get('{}_max'.format(band)))
-
-            img_bands.append(image.select(band).unitScale(mini.subtract(1), maxi.add(1)))
-            dicts.append(min_max_dict)
-        image_norm = ee.Image(img_bands)
-
-        return image_norm, dicts
+        if isinstance(image, ee.Image):
+            bands = image.bandNames().getInfo()
+        elif isinstance(image, ee.ImageCollection):
+            image = eeICtolist(image)
+            bands = image[0].bandNames().getInfo()
+        elif isinstance(image, list):
+            bands = image[0].bandNames().getInfo()        
+        else:
+            raise TypeError('image arg must be ee.Image, ee.ImageCollection, list')
     
-    def segment(self, image, compactness=0, gammafilter=True):
+        if isinstance(band, int): 
+            selected_band = bands[band]
+        elif isinstance(band, str):
+            selected_band = band
+        else:
+            raise TypeError('band arg must be int, str')
+        
+        aoi = self.get_aoi()
+        
+        def normalize(image):
+            try:
+                system_index = image.get('system:index').getInfo()
+                system_index + ''
+            except:
+                system_index = image.get('system:id').getInfo()
+            
+            system_index = system_index.replace('/', '__')
+            
+            image_band = image.select(selected_band)
+            rest = image.select([bnd for bnd in bands if bnd != selected_band])
+            
+            scale = image_band.projection().nominalScale().getInfo()
+            if scale > 100:
+                scale = 10
+            
+            min_max_dict = image_band.reduceRegion(
+                    ee.Reducer.minMax(),
+                    aoi,    
+                    crs='EPSG:3031',
+                    scale=scale,
+                    maxPixels=10e12
+                    )
+            
+            mini = ee.Number(min_max_dict.get('{}_min'.format(selected_band)))
+            maxi = ee.Number(min_max_dict.get('{}_max'.format(selected_band)))
+
+            normalized = image_band.unitScale(mini, maxi)
+            
+            merged = ee.Image([normalized, rest])
+            
+            return merged.set('system:index', system_index)
+        
+        if isinstance(image, ee.Image):
+            return normalize(image)
+        
+        return list(map(normalize, image))
+    
+    def segment(self, image, compactness=0, mapfilter=True):
         """
         (Warning: removes the angle band)
         
@@ -1046,7 +1221,7 @@ Try selecting a smaller area.'.format(pm_best*100))
             
             compactness (int): Number representing the approximate size of clusters
             
-            gammafilter (bool): If enabled, will filter the images before segmentation
+            mapfilter (bool): If enabled, will filter the images before segmentation
             
         Returns:
             segmented (same as images): The image/images with these bands:
@@ -1060,16 +1235,20 @@ Try selecting a smaller area.'.format(pm_best*100))
         
         print('Starting segmentation...')
         
-        if gammafilter:
-            image = self.gammafilter(image)
+        if mapfilter:
+            image = self.mapfilter(image)
         
         def map_segment(image):
             image = ee.Image(image)
             coordinates = image.get('system:footprint').getInfo()['coordinates']
             try:
-                system_index = image.get('system:id').getInfo().replace("/", "") + '_segmentation'
+                system_index = image.get('system:index').getInfo()
+                system_index + ''
             except:
-                system_index = image.get('system:index').getInfo().replace("/", "") + '_segmentation'
+                system_index = image.get('system:id').getInfo()
+            
+            system_index = system_index.replace('/', '__')
+            
             SNIC = ee.Algorithms.Image.Segmentation.SNIC(
                 image, **{'compactness': compactness,
                           'connectivity': 8})
@@ -1092,11 +1271,9 @@ Try selecting a smaller area.'.format(pm_best*100))
             image = remove_angle(image)    
             segmented = map_segment(image)
         elif isinstance(image, ee.ImageCollection):
-            image = self.gammafilter(image)
             image = eeICtolist(image)
             segmented = list(map(map_segment, image))
         elif isinstance(image, list):
-            image = self.gammafilter(image)
             segmented = list(map(map_segment, image))
             
         print('Segmentation done')
@@ -1104,29 +1281,55 @@ Try selecting a smaller area.'.format(pm_best*100))
         return segmented
         
 
-    def gammafilter(self, image):
+    def mapfilter(self, image, use_filter='gammamap'):
         """
-        Applies a gamma maximum filter to an image/images. As implemented as in \
-            Sentinel-1 SAR Backscatter Analysis Ready Data Preparation in 
-            Google Earth Engine.
+        Applies a filter to the image argument. List of implemented filters:
+            - lowpass1
+            - lowpass2
+            - highpass1
+            - highpass2
+            - frost (as in https://www.imageeprocessing.com/2018/06/frost-filter.html)
+            - gammamap (as in Lopes A., Nezry, E., Touzi, R., and Laur, H., 1990.)
 
         Parameters:
-            image (ee.Image or ee.ImageCollection): The image/images to be \
+            image (ee.Image, ee.ImageCollection, list): The image/images to be \
                 filtered for speckle
+            
+            use_filter (str): The filter to use for filtering
 
         Returns:
-            filtered (ee.Image): The filtered image/images
+            filtered (same as image): The filtered image/images
         """
         assert isinstance(image, (
             ee.Image, ee.ImageCollection, list)
             ), "Image must be either ee.Image, ee.ImageCollection, or list of ee.Images"
+
+        try:
+            system_index = image.get('system:index').getInfo()
+            system_index + ''
+        except:
+            system_index = image.get('system:id').getInfo()
+        
+        system_index = system_index.replace('/', '__') + f'_{use_filter}'
+        
+        
+        filters = ['lowpass1', 'lowpass2', 'highpass1', 'highpass2', 'frost', 'gammamap']
+        
+        if use_filter not in filters:
+            raise NameError(f'Filter must be one of the following: {filters}')
+        
+        use_filter = globals().get(use_filter)
+        
+        def filt(image):
+            return use_filter(image).set('system:index', system_index)
+            
         
         if isinstance(image, ee.Image):
-            filtered = gammamap(image)
+            filtered = filt(image)
         elif isinstance(image, ee.ImageCollection):
-            filtered = image.map(gammamap)
+            filtered = image.map(filt)
         elif isinstance(image, list):
-            filtered = list(map(self.gammafilter, image))
+            filtered = list(map(filt, image))
         return filtered
 
     def disp(self, image, rgb=False, band=0):
@@ -1311,7 +1514,13 @@ Try selecting a smaller area.'.format(pm_best*100))
         bands_to_store = ['contrast', 'corr', 'diss', 'ent', 'asm', 'idm', 'prom']
         
         def CM(image):
-            system_index = image.get('system:index').getInfo().replace('/', '') + '_CM_stats'
+            try:
+                system_index = image.get('system:index').getInfo()
+                system_index + ''
+            except:
+                system_index = image.get('system:id').getInfo()
+            
+            system_index = system_index.replace('/', '__')
             
             if isinstance(band, int):
                 bands = image.bandNames().getInfo()
@@ -1380,7 +1589,7 @@ class CustomCollection(Area):
     """
     This is a subclass of the main class. Use it on importing images from \
         Google Cloud Storage. Standard operations can be applied like 
-        gammafilter and segmentation.
+        mapfilter and segmentation.
 
     Parameters: 
         cloud_bucket (str): string describing the name of the cloud bucket
@@ -1396,9 +1605,9 @@ class CustomCollection(Area):
         - one_per()
         - latest_img()
         - append_elevation_info()
-        - normalize_all_bands()
+        - normalize_band()
         - segment()
-        - gammafilter()
+        - mapfilter()
         - disp()
         - download()
         - hist() 
@@ -1602,7 +1811,7 @@ class CustomImage(Area):
     """
     This is a subclass of the main class. Use it on importing a singular image from \
         Google Cloud Storage. Standard operations can be applied like \
-        gammafilter and segmentation.
+        mapfilter and segmentation.
 
     Parameters: 
         cloud_bucket (str): string describing the name of the cloud bucket
@@ -1619,9 +1828,9 @@ class CustomImage(Area):
         - one_per()
         - latest_img()
         - append_elevation_info()
-        - normalize_all_bands()
+        - normalize_band()
         - segment()
-        - gammafilter()
+        - mapfilter()
         - disp()
         - download()
         - hist() 
