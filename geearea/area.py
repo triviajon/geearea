@@ -919,13 +919,13 @@ class Area:
         return self.aoi
 
     def apply_filters(self, collection='COPERNICUS/S1_GRD_FLOAT',
-                      start_date=ee.Date(0),
-                      end_date=ee.Date(date.today().isoformat()),
-                      tRP1=None, tRP2=None, res=None, orbit_node=None, 
-                      ins=None, earliest_first=False):
+                          start_date=ee.Date(0),
+                          end_date=ee.Date(date.today().isoformat()),
+                          polarization=None, res=None, orbit_node=None, 
+                          ins=None, earliest_first=False):
         """
         Applies filters to grab an image collecton.
-
+    
         Parameters:
             collection (str): Which collection to grab images from
             
@@ -933,9 +933,12 @@ class Area:
             
             end_date (ee.Date): End date of filtering
             
-            tRP1 (str): Band to filter for. Defaults to None for None for any bands
-            
-            tRP2 (str): Secondary band to filter for. Defaults for None for any bands
+            polarization (str): Type of polarization to exclusively filter for. \
+                Defaults to None (any). List of polarization for Sentinel-1 Radar:
+                - SH: Single HH
+                - DH: Dual HH/HV
+                - SV: Single VV
+                - DV: Dual VV/VH
             
             res (str): L, M, or H. Resolution to filter for. Defaults to None (any)
             
@@ -946,7 +949,7 @@ class Area:
             earliest_first (bool): If set to True, the ee.ImageCollection returned \
                 will be sorted s.t. the first ee.Image will be the captured the \
                 earliest. Defaults to False for latest image first.
-
+    
         Returns:
             sort (ee.ImageCollection): An image collection with the area of geoJSON
             and the specified filters in the args applied.
@@ -955,18 +958,25 @@ class Area:
             start_date = ee.Date(start_date)
         if isinstance(end_date, (str, int)):
             end_date = ee.Date(end_date)
-
+    
         aoi = self.get_aoi()
-
+    
         img_set = ee.ImageCollection(collection).filterBounds(aoi).filterDate(start_date, end_date)
-
-        if tRP1 is not None:
-            img_set = img_set.filter(ee.Filter.listContains(
-                'transmitterReceiverPolarisation', tRP1))
-        if tRP2 is not None:
-            img_set = img_set.filter(ee.Filter.listContains(
-                'transmitterReceiverPolarisation', tRP2))
-
+    
+        if polarization is not None:
+            polarization_dict = {
+                'SH': [ee.Filter.listContains('transmitterReceiverPolarisation', 'HH'),
+                       ee.Filter.listContains('transmitterReceiverPolarisation', 'HV').Not()],
+                'DH': [ee.Filter.listContains('transmitterReceiverPolarisation', 'HH'),
+                       ee.Filter.listContains('transmitterReceiverPolarisation', 'HV')],
+                'SV': [ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'),
+                       ee.Filter.listContains('transmitterReceiverPolarisation', 'VH').Not()],
+                'DV': [ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'),
+                       ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'),]}
+            
+            for filt in polarization_dict[polarization_dict]:
+                img_set = img_set.filter(filt)
+    
         if ins is not None:
             img_set = img_set.filter(ee.Filter.eq('instrumentMode', ins))
         if res is not None:
@@ -981,10 +991,10 @@ class Area:
     def one_per(self, time_range, collection='COPERNICUS/S1_GRD_FLOAT',
                       start_date=ee.Date(0),
                       end_date=ee.Date(date.today().isoformat()),
-                      tRP1=None, tRP2=None, res=None, orbit_node=None, ins=None):
+                      polarization=None, res=None, orbit_node=None, ins=None):
         """
         Applies filters to create a LIST with one ee.Image per time_range.
-
+    
         Parameters:
             time_range (str): day, month, or year. Specifies the approximate \
                 time range between photos.
@@ -995,9 +1005,12 @@ class Area:
             
             end_date (ee.Date): End date of filtering
             
-            tRP1 (str): Band to filter for. Defaults to None for none for any bands
-            
-            tRP2 (str): Secondary band to filter for. Defaults for None for any bands
+            polarization (str): Type of polarization to exclusively filter for. \
+                Defaults to None (any). List of polarization for Sentinel-1 Radar:
+                - SH: Single HH
+                - DH: Dual HH/HV
+                - SV: Single VV
+                - DV: Dual VV/VH
             
             res (str): L, M, or H. Resolution to filter for. Defaults to None \
                 for any resolution
@@ -1006,7 +1019,7 @@ class Area:
                
             ins (str): The instrumental mode to filter for (IW/EW). Defaults to None \
                 for any instrument mode
-
+    
         Returns:
             collected_imgs (ee.ImageCollection): An image collection with the area
             of geoJSON and the proper filters applied
@@ -1014,10 +1027,10 @@ class Area:
         def percent_missing(image):
             """
             Helper function that returns the % of the image data missing in the first band.
-
+    
             Parameters:
                 image (ee.Image): The image to calculate the % missing of
-
+    
             Returns:
                 percentMissing (float): The % missing of the image data compared \
                     to the self.get_aoi()
@@ -1026,19 +1039,19 @@ class Area:
                 ee.Reducer.sum(), self.get_aoi(), scale=100, maxPixels=10e8).get('constant'))
             totalArea = ee.Number(ee.Image(1).mask().reduceRegion(
                 ee.Reducer.sum(), self.get_aoi(), scale=100, maxPixels=10e8).get('constant'))
-
+    
             percent_missing = missing.divide(totalArea).getInfo()
             return percent_missing
-
+    
         if isinstance(start_date, (str, int)):
             start_date = ee.Date(start_date)
         if isinstance(end_date, (str, int)):
             end_date = ee.Date(end_date)
-
+    
         end_date_time = end_date
-
+    
         current_start_time = start_date
-
+    
         collected_imgs = []
         while ee.Algorithms.If(
                 ee.Number.expression("x > 0", {
@@ -1048,8 +1061,8 @@ class Area:
                                                       .getRange(time_range).getInfo()['dates'])
             img_col = self.apply_filters(collection=collection,
                               start_date=current_start_time,
-                              end_date=current_end_time, tRP1=tRP1, tRP2=tRP2,
-                              res=res, ins=ins, earliest_first=True)
+                              end_date=current_end_time, polarization=polarization,
+                              orbit_node=orbit_node, res=res, ins=ins, earliest_first=True)
             try:
                 as_list = img_col.toList(img_col.size())
                 best = ee.Image(as_list.get(0)).clip(self.get_aoi())
@@ -1067,14 +1080,14 @@ class Area:
                 collected_imgs.append(best.clip(self.get_aoi()))
                 print('Selected an image for {}'
                       .format(ee.Date(current_start_time).format('YYYY-MM-dd').getInfo()))
-
+    
             except:
                 print('There are no images in the',
                       time_range, "starting on",
                       ee.Date(current_start_time).format('YYYY-MM-dd').getInfo())
-
+    
             current_start_time = current_end_time
-
+    
         return collected_imgs
 
     def latest_img(self, collection='COPERNICUS/S1_GRD_FLOAT', threshold=80):
