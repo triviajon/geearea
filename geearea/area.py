@@ -306,7 +306,7 @@ def frost(image):
     distArrImg = ee.Image(distArr)
     
     weights = ee.List.repeat(ee.List.repeat(1,nfrost),nfrost)
-    kernel = ee.Kernel.fixed(nfrost,nfrost, weights, 1, 1)
+    kernel = ee.Kernel.fixed(nfrost,nfrost, weights, center, center)
     
     mean = image.select(bandNames).reduceNeighborhood(ee.Reducer.mean(), kernel);
     var = image.select(bandNames).reduceNeighborhood(ee.Reducer.variance(), kernel);
@@ -553,7 +553,8 @@ def batchExport(images, scale, coords, cloud_bucket='',
     active_ind = []
     STARTED_TASKS = False
     start_time = dt.datetime.now(pytz.utc)
-
+    exception_flag = False
+    
     while True:
         try:
             if not STARTED_TASKS:
@@ -569,7 +570,8 @@ def batchExport(images, scale, coords, cloud_bucket='',
                 
             if True not in active_ind:
                 break
-        except KeyboardInterrupt:
+        except:
+            exception_flag = True
             for task in tasks:
                 task.cancel()
             break
@@ -607,7 +609,7 @@ def batchExport(images, scale, coords, cloud_bucket='',
                 print('ERROR: Directory does not exist on disk!',
                       'Please create it first.')
         
-    if to_disk:
+    if to_disk and not exception_flag:
         new = get_new(start_time)
         download_list_of_blobs(new)
 
@@ -919,7 +921,8 @@ class Area:
     def apply_filters(self, collection='COPERNICUS/S1_GRD_FLOAT',
                       start_date=ee.Date(0),
                       end_date=ee.Date(date.today().isoformat()),
-                      tRP1=None, tRP2=None, res=None, ins=None, earliest_first=False):
+                      tRP1=None, tRP2=None, res=None, orbit_node=None, 
+                      ins=None, earliest_first=False):
         """
         Applies filters to grab an image collecton.
 
@@ -934,9 +937,11 @@ class Area:
             
             tRP2 (str): Secondary band to filter for. Defaults for None for any bands
             
-            res (str): L, M, or H. Resolution to filter for. Defaults to None (any resolution)
+            res (str): L, M, or H. Resolution to filter for. Defaults to None (any)
             
-            ins (str): The instrumental mode to filter for. Defaults to None (any mode)
+            orbit_node (str): 'ASCENDING' or 'DESCENDING'. Orbit pass. Defaults to None (any)
+            
+            ins (str): The instrumental mode to filter for. Defaults to None (any)
             
             earliest_first (bool): If set to True, the ee.ImageCollection returned \
                 will be sorted s.t. the first ee.Image will be the captured the \
@@ -966,7 +971,9 @@ class Area:
             img_set = img_set.filter(ee.Filter.eq('instrumentMode', ins))
         if res is not None:
             img_set = img_set.filter(ee.Filter.eq('resolution', res))
-
+        if orbit_node is not None:
+            img_set = img_set.filter(ee.Filter.eq('orbitProperties_pass', orbit_node))
+            
         sort = img_set.sort('system:time_start', opt_ascending=earliest_first)
         print(f'This image collection has {sort.size().getInfo()} images.')
         return sort
@@ -974,7 +981,7 @@ class Area:
     def one_per(self, time_range, collection='COPERNICUS/S1_GRD_FLOAT',
                       start_date=ee.Date(0),
                       end_date=ee.Date(date.today().isoformat()),
-                      tRP1=None, tRP2=None, res=None, ins=None):
+                      tRP1=None, tRP2=None, res=None, orbit_node=None, ins=None):
         """
         Applies filters to create a LIST with one ee.Image per time_range.
 
@@ -994,7 +1001,9 @@ class Area:
             
             res (str): L, M, or H. Resolution to filter for. Defaults to None \
                 for any resolution
-                
+            
+            orbit_node (str): 'ASCENDING' or 'DESCENDING'. Orbit pass. Defaults to None (any)
+               
             ins (str): The instrumental mode to filter for (IW/EW). Defaults to None \
                 for any instrument mode
 
@@ -1138,7 +1147,7 @@ class Area:
         
         return multi
 
-    def normalize_band(self, image, band=0):
+    def normalize_band(self, image, band=0, band_range=None):
         """
         Normalizes the band of a given image/images. 
         
@@ -1147,11 +1156,14 @@ class Area:
                 to normalize
             band (int, str): The band of the image to normalize. Either the \
                 named band or an int representing which band to normalize
+            band_range (list): If set, will normalize to between these two \
+                values and clamp all outside to the minimum and maximum. 
                 
         Returns:
             normalized (ee.Image, list): An image or images with the normalize \
                 band as the new first band. The other bands are untouched
         """
+        
         if isinstance(image, ee.Image):
             bands = image.bandNames().getInfo()
         elif isinstance(image, ee.ImageCollection):
@@ -1177,31 +1189,38 @@ class Area:
                 system_index + ''
             except:
                 system_index = image.get('system:id').getInfo()
-            
             system_index = system_index.replace('/', '__')
             
             image_band = image.select(selected_band)
             rest = image.select([bnd for bnd in bands if bnd != selected_band])
             
-            scale = image_band.projection().nominalScale().getInfo()
-            if scale > 100:
-                scale = 10
+            if band_range:
+                if len(band_range) != 2:
+                    raise ValueError('band_range should be a list of two values')
+                    
+                mini = band_range[0]
+                maxi = band_range[1]
+                
+                image_band = image_band.clamp(mini, maxi)
             
-            min_max_dict = image_band.reduceRegion(
-                    ee.Reducer.minMax(),
-                    aoi,    
-                    crs='EPSG:3031',
-                    scale=scale,
-                    maxPixels=10e12
-                    )
-            
-            mini = ee.Number(min_max_dict.get('{}_min'.format(selected_band)))
-            maxi = ee.Number(min_max_dict.get('{}_max'.format(selected_band)))
+            else:
+                scale = image_band.projection().nominalScale().getInfo()
+                if scale > 100:
+                    scale = 10
+                
+                min_max_dict = image_band.reduceRegion(
+                        ee.Reducer.minMax(),
+                        aoi,    
+                        crs='EPSG:3031',
+                        scale=scale,
+                        maxPixels=10e12
+                        )
+                
+                mini = ee.Number(min_max_dict.get('{}_min'.format(selected_band)))
+                maxi = ee.Number(min_max_dict.get('{}_max'.format(selected_band)))
 
             normalized = image_band.unitScale(mini, maxi)
-            
             merged = ee.Image([normalized, rest])
-            
             return merged.set('system:index', system_index)
         
         if isinstance(image, ee.Image):
@@ -1313,10 +1332,10 @@ class Area:
         system_index = system_index.replace('/', '__') + f'_{use_filter}'
         
         
-        filters = ['lowpass1', 'lowpass2', 'highpass1', 'highpass2', 'frost', 'gammamap']
+        # filters = ['lowpass1', 'lowpass2', 'highpass1', 'highpass2', 'frost', 'gammamap']
         
-        if use_filter not in filters:
-            raise NameError(f'Filter must be one of the following: {filters}')
+        # if use_filter not in filters:
+        #     raise NameError(f'Filter must be one of the following: {filters}')
         
         use_filter = globals().get(use_filter)
         
@@ -1556,6 +1575,24 @@ class Area:
         else:
             raise TypeError("image arg is not of ee.Image, ee.ImageCollection, or list type")
         return CM_stats
+    
+    def get_image_minMax(self, image):
+        # r10.reduceRegion(ee.Reducer.minMax(), raster10.get_aoi(), crs='EPSG:3031', scale=10, maxPixels=10e12).getInfo()
+        """
+        Returns a dictionary of the mininium and maximum of each band
+        
+        Parameters:
+            image (ee.Image): A single image
+        
+        Returns:
+            minmax (dict): A dictionary containing the min, max values of each band
+        """
+                
+        minMax = image.reduceRegion(ee.Reducer.minMax(), self.get_aoi(),
+                                    crs='EPSG:3031', scale=image.projection().nominalScale(),
+                                    maxPixels=10e12).getInfo()
+        
+        return minMax
         
     
     def pypeline(self, start_date, end_date, cloud_bucket, 
