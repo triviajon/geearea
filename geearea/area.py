@@ -974,7 +974,7 @@ class Area:
                 'DV': [ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'),
                        ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'),]}
             
-            for filt in polarization_dict[polarization_dict]:
+            for filt in polarization_dict[polarization]:
                 img_set = img_set.filter(filt)
     
         if ins is not None:
