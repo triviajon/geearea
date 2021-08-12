@@ -460,6 +460,7 @@ def batchExport(images, scale, coords, cloud_bucket='',
                 system_index + ''
             except:
                 system_index = img.get('system:id').getInfo()
+                
             task = ee.batch.Export.image.toCloudStorage(**{
                 'image': img,
                 'fileNamePrefix': directory + '/' + system_index,
@@ -498,7 +499,7 @@ def batchExport(images, scale, coords, cloud_bucket='',
     def reduced_upload(failed_task, scale, cloud_bucket, directory):
         failed_i = tasks.index(failed_task)
         failed_image = images_sort[failed_i]
-        image_coordinates = failed_image.get('system:foodprint').getInfo()['coordinates']
+        image_coordinates = failed_image.get('system:footprint').getInfo()['coordinates']
         image_segmented = reduce(image_coordinates)
         n = 0
         for coords in image_segmented.tolist():
@@ -570,10 +571,15 @@ def batchExport(images, scale, coords, cloud_bucket='',
                 
             if True not in active_ind:
                 break
-        except:
+        except Exception as e:
             exception_flag = True
             for task in tasks:
                 task.cancel()
+                try:
+                    error_message = ee.data.getTaskStatus(task.id)[0]['error_message']
+                    print(f'Task ID had an error message:/n {error_message}')
+                except:
+                    print(e)
             break
         
     def get_new(start_time):
@@ -875,7 +881,7 @@ class Area:
         - latest_img()
         - append_elevation_info()
         - normalize_band()
-        - segment()
+        - cluster()
         - mapfilter()
         - disp()
         - download()
@@ -986,7 +992,7 @@ class Area:
             
         sort = img_set.sort('system:time_start', opt_ascending=earliest_first)
         print(f'This image collection has {sort.size().getInfo()} images.')
-        return sort
+        return ee.ImageCollection(sort)
 
     def one_per(self, time_range, collection='COPERNICUS/S1_GRD_FLOAT',
                       start_date=ee.Date(0),
@@ -1088,7 +1094,7 @@ class Area:
     
             current_start_time = current_end_time
     
-        return collected_imgs
+        return ee.ImageCollection(collected_imgs)
 
     def latest_img(self, collection='COPERNICUS/S1_GRD_FLOAT', threshold=80):
         """
@@ -1241,22 +1247,25 @@ class Area:
         
         return list(map(normalize, image))
     
-    def segment(self, image, compactness=0, mapfilter=True):
+    def cluster(self, image, compactness=0, mapfilter=True):
         """
+        (Warning): MUST be done AFTER normalization
         (Warning: removes the angle band)
         
-        Segments an image or images using the Google Earth Engine Algorithm \
+        Data is scaled to 0-255.
+        
+        Clusters an image or images using the Google Earth Engine Algorithm \
             SNIC algorithm
         
         Parameters:
-            images (ee.Image, ee.ImageCollection, list): Image/images to segment
+            images (ee.Image, ee.ImageCollection, list): Image/images to create clusters on
             
             compactness (int): Number representing the approximate size of clusters
             
-            mapfilter (bool): If enabled, will filter the images before segmentation
+            mapfilter (bool): If enabled, will filter the images before clustering
             
         Returns:
-            segmented (same as images): The image/images with these bands:
+            clustered (same as images): The image/images with these bands:
                 - clusters (unique ID/cluster)
                 - radar_data_mean (per cluster, of the original image's first non-angle band)
                 - original first non-angle band
@@ -1265,12 +1274,12 @@ class Area:
             ee.Image, ee.ImageCollection, list)
             ), "Image must be either ee.Image, ee.ImageCollection, or list of ee.Images"
         
-        print('Starting segmentation...')
+        print('Starting clustering...')
         
         if mapfilter:
             image = self.mapfilter(image)
         
-        def map_segment(image):
+        def map_cluster(image):
             image = ee.Image(image)
             coordinates = image.get('system:footprint').getInfo()['coordinates']
             try:
@@ -1283,7 +1292,8 @@ class Area:
             
             SNIC = ee.Algorithms.Image.Segmentation.SNIC(
                 image, **{'compactness': compactness,
-                          'connectivity': 8})
+                          'connectivity': 8,
+                          'size': 20})
             SNIC_bands_removed = SNIC.select([band for band in SNIC.bandNames().getInfo()
                                                  if band != 'angle_mean' and band != 'angle'
                                                  and band != 'labels' and band != 'seeds'])
@@ -1301,16 +1311,16 @@ class Area:
         
         if isinstance(image, ee.Image):
             image = remove_angle(image)    
-            segmented = map_segment(image)
+            clustered = map_cluster(image)
         elif isinstance(image, ee.ImageCollection):
             image = eeICtolist(image)
-            segmented = list(map(map_segment, image))
+            clustered = list(map(map_cluster, image))
         elif isinstance(image, list):
-            segmented = list(map(map_segment, image))
+            clustered = list(map(map_cluster, image))
             
-        print('Segmentation done')
+        print('Clustering done')
             
-        return segmented
+        return clustered
         
 
     def mapfilter(self, image, use_filter='gammamap'):
@@ -1335,31 +1345,24 @@ class Area:
         assert isinstance(image, (
             ee.Image, ee.ImageCollection, list)
             ), "Image must be either ee.Image, ee.ImageCollection, or list of ee.Images"
-
-        try:
-            system_index = image.get('system:index').getInfo()
-            system_index + ''
-        except:
-            system_index = image.get('system:id').getInfo()
-        
-        system_index = system_index.replace('/', '__') + f'_{use_filter}'
-        
-        
-        # filters = ['lowpass1', 'lowpass2', 'highpass1', 'highpass2', 'frost', 'gammamap']
-        
-        # if use_filter not in filters:
-        #     raise NameError(f'Filter must be one of the following: {filters}')
         
         use_filter = globals().get(use_filter)
         
         def filt(image):
+            try:
+                system_index = image.get('system:index').getInfo()
+                system_index + ''
+            except:
+                system_index = image.get('system:id').getInfo()
+            
+            system_index = system_index.replace('/', '__') + f'_{use_filter.__name__}'
             return use_filter(image).set('system:index', system_index)
             
-        
         if isinstance(image, ee.Image):
             filtered = filt(image)
         elif isinstance(image, ee.ImageCollection):
-            filtered = image.map(filt)
+            image = eeICtolist(image)
+            filtered = list(map(filt, image))
         elif isinstance(image, list):
             filtered = list(map(filt, image))
         return filtered
@@ -1403,7 +1406,8 @@ class Area:
             fmap.add_child(folium.LayerControl())
             display(fmap)
 
-    def download(self, image, scale, cloud_bucket, directory, to_disk=True, tryReduce=False):
+    def download(self, image, scale, cloud_bucket, directory, to_disk=True, tryReduce=False,
+                 withbandsfile=False):
         """
         Downloads either an image or an image collection to a directory.
         (note: I couldn't get geemap to download singular images, but
@@ -1519,10 +1523,10 @@ class Area:
                               self.get_aoi()).get(band).getInfo()
         return stats
     
-    def get_CM_stats(self, image, band=0, bands_to_store=['contrast', 'corr', 'diss', 'ent', 'asm', 'idm', 'prom']):
+    def get_CM_stats(self, image, band=0, info_to_store=['contrast', 'corr', 'diss', 'ent', 'asm', 'idm', 'prom']):
         """
         Grabs averaged statistics derivable from the co-occurrence matrix of 
-        an image band. List of statistics returned:
+        an image band. Data is scaled to 0-255. List of statistics returned:
             - contrast (con)
             - correlation (cor)
             - dissimilarity (dis)
@@ -1542,9 +1546,7 @@ class Area:
             CM_stats (same type as image): image/images with bands as listed above
         """
         print('Starting CM_stats ...')
-        
-        bands_to_store = ['contrast', 'corr', 'diss', 'ent', 'asm', 'idm', 'prom']
-        
+                
         def CM(image):
             try:
                 system_index = image.get('system:index').getInfo()
@@ -1552,26 +1554,25 @@ class Area:
             except:
                 system_index = image.get('system:id').getInfo()
             
-            system_index = system_index.replace('/', '__')
+            system_index = system_index.replace('/', '__') + '__CMstats'
             
             if isinstance(band, int):
                 bands = image.bandNames().getInfo()
-                b = bands[band]
-                
-            image_band = image.select(b)
+                bandname = bands[band]
+            
+            bands_to_store = [bandname+'_'+store_bn for store_bn in info_to_store]
+            
+            image_band = image.select(bandname)
             
             if not image_band.get('Int32').getInfo():
                 image_band = image_band.multiply(255).toInt32().set('Int32', True)
-        
-            for i, band_n in enumerate(bands_to_store):
-                bands_to_store[i] = b + '_' + band_n
-    
+                
             GCM = image_band.glcmTexture()
-            CM_stats = GCM.select(bands_to_store).set('system_index', system_index)
+            CM_stats = GCM.select(bands_to_store).set('system:index', system_index)
             
             nonlocal curr
-            print(f"{curr}/{m} complete")
             curr += 1
+            print(f"{curr}/{m} CM_stats complete")
             
             return CM_stats
         
@@ -1602,19 +1603,20 @@ class Area:
         """
                 
         minMax = image.reduceRegion(ee.Reducer.minMax(), self.get_aoi(),
-                                    crs='EPSG:3031', scale=image.projection().nominalScale(),
+                                    scale=image.select(0).projection().nominalScale(),
                                     maxPixels=10e12).getInfo()
         
         return minMax
         
     
     def pypeline(self, start_date, end_date, cloud_bucket, 
-                 directory, collection='COPERNICUS/S1_GRD_FLOAT', scale=50):
+                 directory, polarization='SH',
+                 collection='COPERNICUS/S1_GRD_FLOAT', scale=50):
         """
         This pipeline is a single command that will collect one image from every
         month between start_date and end_date and download. The inbetween work is 
         done for the user. For more flexibility, consider manually collecting images.
-        Each image has these bands: segmentation results, band_means
+        Each image has these bands: cluster results, band_means
         
         Parameters:
             start_date (ee.Date, str): Start date of filtering in ISO format
@@ -1624,22 +1626,22 @@ class Area:
         Returns:
             None
         """
-        one_per_images = self.one_per('month', collection, start_date=start_date,
-                                      end_date=end_date)
+        one_per_images = self.one_per('month', collection=collection, start_date=start_date,
+                                      end_date=end_date, polarization=polarization)
         
-        segmented_and_filtered = self.segment(one_per_images)
+        normalized_images = self.normalize_band(one_per_images, band=0, band_range=[0, 500])
         
-        # get texture info 
+        clustered_and_filtered = self.cluster(normalized_images)
+        textures = self.get_CM_stats(normalized_images, band=0)
         
-        self.download(segmented_and_filtered, scale=scale, cloud_bucket=cloud_bucket,
-                      directory=directory)
+        self.download((clustered_and_filtered+textures), 30, cloud_bucket, directory)
         
         
 class CustomCollection(Area):
     """
     This is a subclass of the main class. Use it on importing images from \
         Google Cloud Storage. Standard operations can be applied like 
-        mapfilter and segmentation.
+        mapfilter and clustering.
 
     Parameters: 
         cloud_bucket (str): string describing the name of the cloud bucket
@@ -1656,7 +1658,7 @@ class CustomCollection(Area):
         - latest_img()
         - append_elevation_info()
         - normalize_band()
-        - segment()
+        - cluster()
         - mapfilter()
         - disp()
         - download()
@@ -1855,7 +1857,7 @@ Try selecting a smaller area.'.format(pm_best*100))
 
             current_start_time = current_end_time
 
-        return collected_imgs
+        return ee.ImageCollection(collected_imgs)
 
 class CustomImage(Area):
     """
@@ -1879,7 +1881,7 @@ class CustomImage(Area):
         - latest_img()
         - append_elevation_info()
         - normalize_band()
-        - segment()
+        - cluster()
         - mapfilter()
         - disp()
         - download()
