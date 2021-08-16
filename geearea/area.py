@@ -246,7 +246,7 @@ def highpass1(image):
     image = image.select(bandNames)
     
     system_index = system_index.replace('/', '__')
-    rowA = [-1/8, 1/8, 1/8]
+    rowA = [-1/8, 1/8, -1/8]
     rowB = [1/8, 0, 1/8]
     
     kernel = ee.Kernel.fixed(width=3, height=3, weights=[rowA, rowB, rowA])
